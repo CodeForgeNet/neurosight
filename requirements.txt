@@ -1,0 +1,15 @@
+# Core dependencies for neurovision
+numpy>=1.24.0
+opencv-python>=4.8.0
+scipy>=1.11.0
+
+# Optional: for connectome extraction (Phase 1 only, not shipped)
+# neuprint-python>=0.4.23
+
+# Development dependencies (for testing, linting, building)
+# pytest>=7.0
+# pytest-cov>=4.0
+# black>=23.0
+# flake8>=6.0
+# mypy>=1.0
+# build>=0.10.0

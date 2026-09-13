@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+venv/
+.pytest_cache/
+.coverage
+dist/
+build/
+*.egg-info/
+PROJECT_STRUCTURE.md
+tests_output/
+*.mp4
+.DS_Store

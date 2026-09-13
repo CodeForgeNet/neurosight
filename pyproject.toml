@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neurovision"
+version = "0.1.0"
+description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+requires-python = ">=3.10"
+keywords = ["motion-detection", "neuroscience", "fly-brain", "connectome", "computer-vision", "edge-ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "black>=23.0",
+    "flake8>=6.0",
+    "mypy>=1.0",
+]
+neuprint = [
+    "neuprint-python>=0.4.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/neurovision"
+Documentation = "https://github.com/yourusername/neurovision#readme"
+Repository = "https://github.com/yourusername/neurovision"
+"Bug Tracker" = "https://github.com/yourusername/neurovision/issues"
+
+[tool.setuptools]
+packages = ["neurovision"]
+
+[tool.setuptools.package-data]
+"*" = ["connectome_weights.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = "test_*.py"
+addopts = "-v"
+
+[tool.black]
+line-length = 100
+target-version = ['py310', 'py311', 'py312']
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
