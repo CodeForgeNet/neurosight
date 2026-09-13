@@ -1,6 +1,6 @@
 # NeuroVision
 
-![NeuroVision Logo](assets/logo.jpg)
+<img src="assets/logos.jpg" width="500" alt="NeuroVision Logo">
 
 [![PyPI version](https://badge.fury.io/py/neurovision.svg)](https://badge.fury.io/py/neurovision)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
