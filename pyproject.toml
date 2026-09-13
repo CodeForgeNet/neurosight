@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neurosight"
-version = "0.1.0"
+version = "0.1.1"
 description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
 readme = "README.md"
 license = {text = "MIT"}
