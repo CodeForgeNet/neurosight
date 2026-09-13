@@ -1,2 +1,2 @@
-include neurovision/data/connectome_weights.json
+include neurosight/data/connectome_weights.json
 include README.md

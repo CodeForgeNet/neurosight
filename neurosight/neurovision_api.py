@@ -1,5 +1,5 @@
 """
-Phase 4: NeuroVision Detector API
+Phase 4: NeuroSight Detector API
 High-level interface: user processes video in 3 lines of code.
 """
 
@@ -13,12 +13,12 @@ from .utils import FrameBuffer, VideoProcessor, PerformanceMonitor, SaliencyMapV
 logger = logging.getLogger(__name__)
 
 
-class NeuroVisionDetector:
+class NeuroSightDetector:
     """
-    User-facing API for NeuroVision motion detection.
+    User-facing API for NeuroSight motion detection.
     
     Example:
-        detector = NeuroVisionDetector(connectome_path="connectome_weights.json")
+        detector = NeuroSightDetector(connectome_path="connectome_weights.json")
         saliency, vectors = detector.process_video("input.mp4", output_video="output.mp4")
     """
 
@@ -29,7 +29,7 @@ class NeuroVisionDetector:
         resize_width: Optional[int] = 320
     ):
         """
-        Initialize NeuroVision motion detector.
+        Initialize NeuroSight motion detector.
         
         Args:
             connectome_path: Path to connectome_weights.json (from Phase 1)
@@ -44,7 +44,7 @@ class NeuroVisionDetector:
         self.frame_buffer = FrameBuffer(buffer_size=2)
         self.performance = PerformanceMonitor()
         
-        logger.info("NeuroVisionDetector initialized")
+        logger.info("NeuroSightDetector initialized")
 
     def process_video(
         self,
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     
     import argparse
     
-    parser = argparse.ArgumentParser(description="NeuroVision Detector")
+    parser = argparse.ArgumentParser(description="NeuroSight Detector")
     parser.add_argument("video_path", help="Path to input video")
     parser.add_argument("--output", help="Path to output video", default=None)
     parser.add_argument("--vectors", action="store_true", help="Overlay motion vectors on output video")
@@ -195,7 +195,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # Initialize and process
-    detector = NeuroVisionDetector(
+    detector = NeuroSightDetector(
         connectome_path="connectome_weights.json",
         tile_size=8,
         resize_width=320

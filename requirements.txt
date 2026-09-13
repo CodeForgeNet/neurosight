@@ -1,4 +1,4 @@
-# Core dependencies for neurovision
+# Core dependencies for neurosight
 numpy>=1.24.0
 opencv-python>=4.8.0
 scipy>=1.11.0

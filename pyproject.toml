@@ -3,7 +3,7 @@ requires = ["setuptools>=65.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "neurovision"
+name = "neurosight"
 version = "0.1.0"
 description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
 readme = "README.md"
@@ -45,13 +45,13 @@ neuprint = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/neurovision"
-Documentation = "https://github.com/yourusername/neurovision#readme"
-Repository = "https://github.com/yourusername/neurovision"
-"Bug Tracker" = "https://github.com/yourusername/neurovision/issues"
+Homepage = "https://github.com/yourusername/neurosight"
+Documentation = "https://github.com/yourusername/neurosight#readme"
+Repository = "https://github.com/yourusername/neurosight"
+"Bug Tracker" = "https://github.com/yourusername/neurosight/issues"
 
 [tool.setuptools]
-packages = ["neurovision"]
+packages = ["neurosight"]
 
 [tool.setuptools.package-data]
 "*" = ["connectome_weights.json"]

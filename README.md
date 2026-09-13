@@ -1,18 +1,16 @@
-# NeuroVision
+# NeuroSight
 
-<img src="assets/logos.jpg" width="500" alt="NeuroVision Logo">
-
-[![PyPI version](https://badge.fury.io/py/neurovision.svg)](https://badge.fury.io/py/neurovision)
+[![PyPI version](https://badge.fury.io/py/neurosight.svg)](https://badge.fury.io/py/neurosight)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://github.com/CodeForgeNet/neurovision/actions/workflows/build.yml/badge.svg)](https://github.com/CodeForgeNet/neurovision/actions)
+[![Build Status](https://github.com/CodeForgeNet/neurosight/actions/workflows/build.yml/badge.svg)](https://github.com/CodeForgeNet/neurosight/actions)
 
 **Motion detection using the fly optic lobe architecture.**
 
-![NeuroVision Demo](assets/demo.gif)
+![NeuroSight Demo](assets/demo.gif)
 
 A lightweight, CPU-friendly motion detection library based on real connectome data from the *Drosophila* (fruit fly) brain. Implements the Hassenstein-Reichardt correlator using synapse weights extracted from the Virtual Fly Brain (VFB) connectome.
 
-## Why NeuroVision?
+## Why NeuroSight?
 
 - **Biologically grounded**: Uses actual synapse counts from the T4/T5 direction-selective neurons (hemibrain connectome)
 - **Lightweight**: ~100KB, zero GPU dependency, works on edge devices (Raspberry Pi, phones, drones)
@@ -29,28 +27,28 @@ A lightweight, CPU-friendly motion detection library based on real connectome da
 
 ### From PyPI
 ```bash
-pip install neurovision
+pip install neurosight
 ```
 
 ### From source
 ```bash
-git clone https://github.com/CodeForgeNet/neurovision
-cd neurovision
+git clone https://github.com/CodeForgeNet/neurosight
+cd neurosight
 pip install -e .
 ```
 
 ## How to Use It
 
-NeuroVision ships with pre-extracted biological connectome weights built directly into the library, so you can start detecting motion immediately.
+NeuroSight ships with pre-extracted biological connectome weights built directly into the library, so you can start detecting motion immediately.
 
 ### Quick Example: Process a Video
 
-The simplest way to use NeuroVision is to process a video file and output an annotated video with a motion heatmap and directional arrows.
+The simplest way to use NeuroSight is to process a video file and output an annotated video with a motion heatmap and directional arrows.
 
 ```python
-from neurovision import NeuroVisionDetector
+from neurosight import NeuroSightDetector
 
-detector = NeuroVisionDetector()
+detector = NeuroSightDetector()
 
 saliency, motion_vectors = detector.process_video(
     "input.mp4",
@@ -65,9 +63,9 @@ If you are reading from a webcam or integrating into a larger robotics pipeline,
 
 ```python
 import cv2
-from neurovision import NeuroVisionDetector
+from neurosight import NeuroSightDetector
 
-detector = NeuroVisionDetector()
+detector = NeuroSightDetector()
 cap = cv2.VideoCapture(0)
 
 ret, frame_prev = cap.read()
@@ -110,7 +108,7 @@ The fly's motion detection system is one of the most well-understood neural circ
 
 Benchmark on Intel i7-12700K, 1280×720 video:
 
-| Metric | NeuroVision | OpenCV OpticalFlow | TensorFlow RAFT |
+| Metric | NeuroSight | OpenCV OpticalFlow | TensorFlow RAFT |
 |--------|-----------|-------------------|-----------------|
 | FPS | 45-50 | 30-35 | 5-10 (GPU) |
 | Latency (ms) | 20-25 | 28-35 | 100+ |
@@ -120,7 +118,7 @@ Benchmark on Intel i7-12700K, 1280×720 video:
 ## FAQ
 
 **Q: Why is this better than optical flow?**  
-A: It's not always better—it's complementary. NeuroVision trades absolute precision for massive simplicity (no GPU, tiny model). It is excellent for edge devices, real-time reactive systems, and biological validity.
+A: It's not always better—it's complementary. NeuroSight trades absolute precision for massive simplicity (no GPU, tiny model). It is excellent for edge devices, real-time reactive systems, and biological validity.
 
 **Q: Can I use this on mobile/Raspberry Pi?**  
 A: Yes. It's pure Python + NumPy/OpenCV (both available on ARM).
@@ -134,13 +132,13 @@ MIT License. See `LICENSE` for details.
 
 ## Citation
 
-If you use NeuroVision in research, please cite:
+If you use NeuroSight in research, please cite:
 
 ```bibtex
-@software{neurovision,
-  title={NeuroVision: Motion Detection Using Fly Optic Lobe Architecture},
+@software{neurosight,
+  title={NeuroSight: Motion Detection Using Fly Optic Lobe Architecture},
   author={CodeForgeNet},
   year={2026},
-  url={https://github.com/CodeForgeNet/neurovision}
+  url={https://github.com/CodeForgeNet/neurosight}
 }
 ```

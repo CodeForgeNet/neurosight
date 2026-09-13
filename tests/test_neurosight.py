@@ -2,7 +2,7 @@
 Phase 5: Unit Tests
 Validate motion detection accuracy and edge cases.
 
-Run: pytest test_neurovision.py -v
+Run: pytest test_neurosight.py -v
 """
 
 import pytest
@@ -12,8 +12,8 @@ import tempfile
 import os
 from pathlib import Path
 
-from neurovision.detector import MotionDetector
-from neurovision.utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
+from neurosight.detector import MotionDetector
+from neurosight.utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
 
 
 @pytest.fixture
@@ -264,9 +264,9 @@ class TestIntegration:
 
     def test_end_to_end_motion_detection(self, temp_connectome):
         """Test full motion detection pipeline on synthetic video."""
-        from neurovision.neurovision_api import NeuroVisionDetector
+        from neurosight.neurosight_api import NeuroSightDetector
         
-        detector = NeuroVisionDetector(connectome_path=temp_connectome, tile_size=16)
+        detector = NeuroSightDetector(connectome_path=temp_connectome, tile_size=16)
         
         # Create synthetic frames with clear motion
         frames = []

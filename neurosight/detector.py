@@ -1,5 +1,5 @@
 """
-Phase 2: Core NeuroVision Math
+Phase 2: Core NeuroSight Math
 Implements Hassenstein-Reichardt correlator using fly optic lobe weights.
 L1/L2 → medulla → T4/T5 direction-selective neurons.
 """
