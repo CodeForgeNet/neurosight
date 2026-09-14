@@ -4,24 +4,27 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://github.com/CodeForgeNet/neurosight/actions/workflows/build.yml/badge.svg)](https://github.com/CodeForgeNet/neurosight/actions)
 
-**Motion detection using the fly optic lobe architecture.**
+**Lightweight motion detection inspired by the fly optic lobe.**
 
 ![NeuroSight Demo](assets/demo.gif)
 
-A lightweight, CPU-friendly motion detection library based on real connectome data from the *Drosophila* (fruit fly) brain. Implements the Hassenstein-Reichardt correlator using synapse weights extracted from the Virtual Fly Brain (VFB) connectome.
+A lightweight, CPU-friendly motion detection library inspired by the *Drosophila* (fruit fly) visual system. NeuroSight implements a Hassenstein-Reichardt-style correlator and uses extracted T4/T5 connectome weights to produce directional motion saliency from ordinary video frames.
+
+NeuroSight is not intended to replace full optical flow or deep models such as RAFT. Its niche is small, inspectable, biologically inspired motion detection for education, experiments, and edge-device prototypes.
 
 ## Why NeuroSight?
 
-- **Biologically grounded**: Uses actual synapse counts from the T4/T5 direction-selective neurons (hemibrain connectome)
-- **Lightweight**: ~100KB, zero GPU dependency, works on edge devices (Raspberry Pi, phones, drones)
-- **CPU-friendly**: Fast processing with biological validity
-- **Production-ready**: Typed, tested, documented Python library, entirely self-contained with no external API calls required at runtime.
+- **Biologically inspired**: Uses a fly-vision motion detector model with T4/T5 direction-selective weighting
+- **Lightweight**: Small Python package, CPU-only, no neural-network checkpoint or GPU runtime
+- **Inspectable**: The core algorithm is NumPy-based and easy to read, tune, and teach
+- **Self-contained at runtime**: Ships with pre-extracted weights, so no external neuroscience API calls are required during use
 
 ### Who is this for?
 
-- **Robotics & Drone Devs**: Need fast, low-power obstacle avoidance.
-- **Edge AI Builders**: Running vision on Raspberry Pi or mobile with zero GPU.
-- **Neuroscience Geeks**: Want to play with real brain connectome math.
+- **Robotics & Edge-AI Builders**: Need simple directional motion cues on CPU-only devices.
+- **Students & Researchers**: Want a compact implementation of fly-inspired motion detection.
+- **Neuroscience / Computer Vision Educators**: Need a practical demo of correlator-based motion saliency.
+- **Hobbyists**: Want to experiment with motion detection on webcams, Raspberry Pi-style devices, or small robots.
 
 ## Installation
 
@@ -97,16 +100,16 @@ For more precise data, the library returns a dictionary of motion vectors broken
 
 ## Architecture & Biological Background
 
-The fly's motion detection system is one of the most well-understood neural circuits. This library translates that biology directly into code using real connectome data (synapse weights), rather than arbitrary constants:
+Fly-inspired motion detection is an established research area. NeuroSight packages one practical version of that idea as a small Python library, combining a Hassenstein-Reichardt-style correlator with pre-extracted T4/T5 weighting:
 
 - **T4/T5 Neurons**: The core of fly motion vision. T4 neurons detect moving bright edges (ON pathway), and T5 neurons detect moving dark edges (OFF pathway). Each is divided into 4 subtypes corresponding to the 4 cardinal directions (up, down, left, right).
 - **Medulla Interneurons**: Signals from photoreceptors are split into L1 (light-sensitive) and L2 (dark-sensitive) channels. They pass through medulla interneurons (Mi1, Tm3, etc.) which act as temporal delay lines.
 - **Hassenstein-Reichardt Correlator**: By multiplying a delayed signal from one photoreceptor with an undelayed signal from a neighboring one, the brain determines direction and speed.
-- **Connectome Weights**: We queried the *Drosophila* hemibrain connectome via neuprint to extract precise synapse counts between these neurons, normalizing them to build our correlator weights.
+- **Connectome Weights**: The included weights are derived from *Drosophila* hemibrain connectivity and normalized for this implementation.
 
 ## Performance
 
-Benchmark on Intel i7-12700K, 1280×720 video:
+Indicative benchmark on Intel i7-12700K, 1280×720 video:
 
 | Metric | NeuroSight | OpenCV OpticalFlow | TensorFlow RAFT |
 |--------|-----------|-------------------|-----------------|
@@ -115,10 +118,31 @@ Benchmark on Intel i7-12700K, 1280×720 video:
 | Memory (MB) | 15 | 25 | 500+ |
 | Model size | <1MB | N/A | 200MB |
 
+These figures are intended as rough positioning, not a claim of universal accuracy or speed. Real performance depends on frame size, tile size, hardware, OpenCV build, and the scene being processed.
+
+### Directional Synthetic Benchmark
+
+NeuroSight also includes a small directional benchmark using a drifting sinusoidal grating (`period=32px`, `speed=4px/frame`) across the four cardinal directions:
+
+```bash
+python benchmarks/run_optical_flow_benchmark.py
+```
+
+| Metric | NeuroSight | Farneback mean-flow baseline |
+|--------|-----------:|-----------------------------:|
+| Direction accuracy | 100.0% | 0.0% |
+| Valid NeuroSight tiles | 1024 / 1024 | N/A |
+| Mean NeuroSight confidence | 0.258 | N/A |
+
+This benchmark tests direction recovery on a periodic grating. Farneback is summarized by the mean dense-flow vector, which can collapse toward zero on this stimulus with the current parameters. Treat this as a scoped synthetic benchmark, not a general claim that classical optical flow fails.
+
 ## FAQ
 
-**Q: Why is this better than optical flow?**  
-A: It's not always better—it's complementary. NeuroSight trades absolute precision for massive simplicity (no GPU, tiny model). It is excellent for edge devices, real-time reactive systems, and biological validity.
+**Q: Is this better than optical flow?**  
+A: Not generally. NeuroSight is complementary: it provides lightweight directional motion saliency, while classical and deep optical-flow methods are usually better when you need dense, metric flow vectors.
+
+**Q: Is the fly-brain idea new?**  
+A: No. Hassenstein-Reichardt correlators and insect-inspired motion detectors have a long research history. NeuroSight's value is packaging the idea into a small, approachable Python library with connectome-weighted T4/T5-style directions.
 
 **Q: Can I use this on mobile/Raspberry Pi?**  
 A: Yes. It's pure Python + NumPy/OpenCV (both available on ARM).

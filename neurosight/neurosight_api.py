@@ -7,7 +7,7 @@ from typing import Tuple, Optional, Dict
 import numpy as np
 import logging
 
-from .detector import MotionDetector
+from .detector import MotionDetector, MotionResult, NeuroSightConfig
 from .utils import FrameBuffer, VideoProcessor, PerformanceMonitor, SaliencyMapVisualizer, OutputWriter
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,8 @@ class NeuroSightDetector:
         self,
         connectome_path: str = "connectome_weights.json",
         tile_size: int = 8,
-        resize_width: Optional[int] = 320
+        resize_width: Optional[int] = 320,
+        config: Optional[NeuroSightConfig] = None,
     ):
         """
         Initialize NeuroSight motion detector.
@@ -38,7 +39,8 @@ class NeuroSightDetector:
         """
         self.detector = MotionDetector(
             connectome_weights_path=connectome_path,
-            tile_size=tile_size
+            tile_size=tile_size,
+            config=config,
         )
         self.video_processor = VideoProcessor(resize_width=resize_width)
         self.frame_buffer = FrameBuffer(buffer_size=2)
@@ -163,6 +165,20 @@ class NeuroSightDetector:
             (saliency_map, motion_vectors)
         """
         return self.detector.process_frame(frame_prev, frame_curr)
+
+    def process_pair(
+        self,
+        frame_prev: np.ndarray,
+        frame_curr: np.ndarray
+    ) -> MotionResult:
+        """
+        Process a single frame pair and return a structured MotionResult.
+
+        This is the forward-compatible API for benchmarks, robotics outputs, and
+        richer diagnostics. `process_frame_pair()` remains available for legacy
+        callers.
+        """
+        return self.detector.process_pair(frame_prev, frame_curr)
 
     def get_performance_stats(self) -> Dict[str, float]:
         """Get performance metrics."""

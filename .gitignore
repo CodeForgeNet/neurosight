@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 venv/
+test_venv/
 .pytest_cache/
 .coverage
 dist/

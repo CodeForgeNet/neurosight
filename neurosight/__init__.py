@@ -11,16 +11,18 @@ Example:
     >>> saliency, vectors = detector.process_video("input.mp4")
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "CodeForgeNet"
 
 from .neurosight_api import NeuroSightDetector
-from .detector import MotionDetector
+from .detector import MotionDetector, MotionResult, NeuroSightConfig
 from .utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
 
 __all__ = [
     'NeuroSightDetector',
     'MotionDetector',
+    'MotionResult',
+    'NeuroSightConfig',
     'FrameBuffer',
     'VideoProcessor',
     'SaliencyMapVisualizer',

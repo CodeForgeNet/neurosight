@@ -12,7 +12,7 @@ import tempfile
 import os
 from pathlib import Path
 
-from neurosight.detector import MotionDetector
+from neurosight.detector import MotionDetector, MotionResult
 from neurosight.utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
 
 
@@ -138,6 +138,48 @@ class TestMotionDetector:
         
         assert saliency.shape == (128, 128), "Saliency map shape should match frame"
         assert saliency.min() >= 0 and saliency.max() <= 1, "Saliency should be normalized [0, 1]"
+
+    def test_process_pair_returns_structured_result(self, temp_connectome):
+        """Test the forward-compatible API returns motion field and diagnostics."""
+        detector = MotionDetector(connectome_weights_path=temp_connectome, tile_size=8)
+
+        frame1 = np.zeros((32, 32), dtype=np.uint8)
+        frame2 = np.zeros((32, 32), dtype=np.uint8)
+        frame1[12:20, 8:16] = 255
+        frame2[12:20, 10:18] = 255
+
+        result = detector.process_pair(frame1, frame2)
+
+        assert isinstance(result, MotionResult)
+        assert result.saliency_map.shape == (32, 32)
+        assert result.confidence_map.shape == (32, 32)
+        assert result.magnitude_map.shape == (32, 32)
+        assert result.angle_map.shape == (32, 32)
+        assert result.motion_field.shape == (32, 32, 2)
+        assert set(result.direction_maps) == {'up', 'down', 'left', 'right'}
+        assert result.diagnostics['total_tiles'] == 16
+        assert result.global_vector[0] > 0
+
+    def test_invalid_frame_pair_shape_raises(self, temp_connectome):
+        """Test mismatched input frames fail with a clear error."""
+        detector = MotionDetector(connectome_weights_path=temp_connectome, tile_size=8)
+
+        frame1 = np.zeros((32, 32), dtype=np.uint8)
+        frame2 = np.zeros((32, 31), dtype=np.uint8)
+
+        with pytest.raises(ValueError, match="frame shapes must match"):
+            detector.process_pair(frame1, frame2)
+
+    def test_shift_no_wrap_zero_pads_edges(self):
+        """Test spatial shifts do not create artificial wraparound pixels."""
+        frame = np.zeros((3, 3), dtype=np.float32)
+        frame[0, 0] = 1.0
+
+        shifted = MotionDetector._shift_no_wrap(frame, 0, 1)
+
+        assert shifted[0, 1] == 1.0
+        assert shifted[0, 0] == 0.0
+        assert shifted[0, 2] == 0.0
 
 
 class TestFrameBuffer:
