@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neurosight"
-version = "0.1.1"
+version = "0.1.2"
 description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
 readme = "README.md"
 license = {text = "MIT"}
@@ -57,6 +57,7 @@ Repository = "https://github.com/CodeForgeNet/neurosight"
 
 [tool.setuptools]
 packages = ["neurosight"]
+include_package_data = true
 
 [tool.setuptools.package-data]
 "*" = ["connectome_weights.json", "py.typed"]
