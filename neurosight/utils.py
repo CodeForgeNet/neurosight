@@ -1,5 +1,6 @@
 """
-Phase 3: Frame Pipeline & Utilities
+Frame pipeline & utilities.
+
 Frame buffering, video I/O, normalization, performance metrics.
 """
 

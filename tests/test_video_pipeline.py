@@ -103,6 +103,28 @@ def test_load_weights_rejects_non_finite(tmp_path):
         MotionDetector(connectome_weights_path=str(bad))
 
 
+def test_read_video_missing_file_raises(tmp_path):
+    with pytest.raises(IOError):
+        list(VideoProcessor().read_video(str(tmp_path / "missing.mp4")))
+
+
+def test_probe_missing_file_raises(tmp_path):
+    with pytest.raises(IOError):
+        VideoProcessor().probe_video(str(tmp_path / "missing.mp4"))
+
+
+def test_performance_monitor_reports():
+    from neurosight.utils import PerformanceMonitor
+
+    monitor = PerformanceMonitor()
+    assert monitor.get_fps() == 0.0
+    monitor.record_frame(0.01)
+    monitor.record_frame(0.02)
+    assert monitor.frame_count == 2
+    assert monitor.get_latency_ms() > 0
+    assert "Frames: 2" in monitor.report()
+
+
 def test_reset_clears_adapted_threshold():
     detector = MotionDetector()
     detector.update(np.full((32, 32), 200, dtype=np.uint8))

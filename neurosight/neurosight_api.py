@@ -1,6 +1,7 @@
 """
-Phase 4: NeuroSight Detector API
-High-level interface: user processes video in 3 lines of code.
+High-level NeuroSight API.
+
+User-friendly interface: process a video or frame pair in a few lines.
 """
 
 import logging

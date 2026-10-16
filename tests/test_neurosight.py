@@ -602,6 +602,17 @@ class TestIntegration:
             assert saliency.shape == (128, 128), "Saliency shape should match frames"
             assert len(vectors) > 0, "Should detect motion vectors"
 
+    def test_legacy_process_frame_returns_tuple(self, temp_connectome):
+        """The legacy core API keeps its (saliency, vectors) contract."""
+        detector = MotionDetector(connectome_weights_path=temp_connectome, tile_size=8)
+        frame1, frame2 = make_translating_square('right')
+
+        saliency, vectors = detector.process_frame(frame1, frame2)
+
+        assert saliency.shape == (64, 64)
+        assert isinstance(vectors, dict)
+        assert all('direction' in v for v in vectors.values())
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

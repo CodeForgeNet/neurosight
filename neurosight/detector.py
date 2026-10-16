@@ -1,7 +1,8 @@
 """
-Phase 2: Core NeuroSight Math
-Implements Hassenstein-Reichardt correlator using fly optic lobe weights.
-L1/L2 → medulla → T4/T5 direction-selective neurons.
+Core NeuroSight math.
+
+Implements a Hassenstein-Reichardt correlator using fly optic lobe weights
+(L1/L2 -> medulla -> T4/T5 direction-selective neurons).
 """
 
 import json
@@ -33,14 +34,14 @@ class NeuroSightConfig:
     opponent_subtraction: bool = True
     adaptation_rate: float = 0.01
     
-    # Phase 5 real-world robustness
+    # Real-world robustness
     temporal_denoising: bool = True
     denoising_alpha: float = 0.5
     flicker_suppression: bool = True
     ego_motion_compensation: bool = True
     blur_handling: bool = False
     
-    # Phase 9 Robotics features
+    # Robotics outputs
     enable_regions: bool = True
     enable_looming: bool = True
     enable_steering: bool = True
@@ -140,11 +141,11 @@ class MotionResult:
     angle_map: np.ndarray
     global_vector: Tuple[float, float]
     
-    # Ego-motion / Robustness (Phase 5)
+    # Ego-motion / robustness
     ego_motion_vector: Optional[Tuple[float, float]] = None
     ego_compensated_field: Optional[np.ndarray] = None
     scene_quality: Optional[Dict[str, float]] = None
-    # Phase 9 Robotics Outputs
+    # Robotics outputs
     regions: Optional[List[Dict[str, Any]]] = None
     looming_score: Optional[float] = None
     time_to_contact: Optional[float] = None
@@ -408,7 +409,7 @@ class MotionDetector:
         self._last_timestamp: Optional[float] = None
         self._last_frame_shape: Optional[Tuple[int, int]] = None
         
-        # Phase 5 real-world robustness state
+        # Real-world robustness state
         self._smoothed_frame: Optional[np.ndarray] = None
         self._ego_motion_vector: Optional[Tuple[float, float]] = None
 
@@ -559,7 +560,7 @@ class MotionDetector:
             'global_contrast': float(np.std(curr)),
         }
         
-        # Phase 9 Robotics features
+        # Robotics outputs
         regions = self._extract_regions(saliency_map, ego_compensated_field)
         looming_score, ttc = self._compute_looming_and_ttc(ego_compensated_field, saliency_map, dt=dt)
         steering_signal = self._compute_steering_signal(saliency_map)
