@@ -1,14 +1,16 @@
 """
-Phase 4: NeuroSight Detector API
-High-level interface: user processes video in 3 lines of code.
+High-level NeuroSight API.
+
+User-friendly interface: process a video or frame pair in a few lines.
 """
 
-from typing import Tuple, Optional, Dict
-import numpy as np
 import logging
+from typing import Dict, Optional, Tuple
+
+import numpy as np
 
 from .detector import MotionDetector, MotionResult, NeuroSightConfig
-from .utils import FrameBuffer, VideoProcessor, PerformanceMonitor, SaliencyMapVisualizer, OutputWriter
+from .utils import OutputWriter, PerformanceMonitor, SaliencyMapVisualizer, VideoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -18,13 +20,13 @@ class NeuroSightDetector:
     User-facing API for NeuroSight motion detection.
     
     Example:
-        detector = NeuroSightDetector(connectome_path="connectome_weights.json")
+        detector = NeuroSightDetector()
         saliency, vectors = detector.process_video("input.mp4", output_video="output.mp4")
     """
 
     def __init__(
         self,
-        connectome_path: str = "connectome_weights.json",
+        connectome_path: Optional[str] = None,
         tile_size: int = 8,
         resize_width: Optional[int] = 320,
         config: Optional[NeuroSightConfig] = None,
@@ -33,9 +35,11 @@ class NeuroSightDetector:
         Initialize NeuroSight motion detector.
         
         Args:
-            connectome_path: Path to connectome_weights.json (from Phase 1)
+            connectome_path: Optional path to a connectome weights JSON file.
+                ``None`` (default) uses the weights bundled with the package.
             tile_size: Motion detection tile size (8 or 16)
             resize_width: Resize video to this width for efficiency (None = no resize)
+            config: Optional NeuroSightConfig preset/configuration
         """
         self.detector = MotionDetector(
             connectome_weights_path=connectome_path,
@@ -43,7 +47,6 @@ class NeuroSightDetector:
             config=config,
         )
         self.video_processor = VideoProcessor(resize_width=resize_width)
-        self.frame_buffer = FrameBuffer(buffer_size=2)
         self.performance = PerformanceMonitor()
         
         logger.info("NeuroSightDetector initialized")
@@ -70,28 +73,40 @@ class NeuroSightDetector:
         output_writer = None
         all_motion_vectors = {}
         final_saliency = None
+        last_shape: Optional[Tuple[int, int]] = None
+        output_fps = 30.0
+        frame_dt = self.detector.config.default_dt
         
         try:
             frame_idx = 0
             
             for frame_idx, frame in self.video_processor.read_video(video_path):
+                # Use the container's real frame rate when available so that
+                # timestamps (and therefore the temporal low-pass) stay calibrated.
+                props = self.video_processor.last_video_properties
+                if props is not None and props.fps > 0:
+                    output_fps = props.fps
+                    frame_dt = props.frame_interval
+
                 # Convert to grayscale for motion detection buffer (saves memory)
                 gray_frame = self.video_processor.to_grayscale(frame)
+                last_shape = gray_frame.shape[:2]
                 
-                # Push frame to buffer
-                is_ready = self.frame_buffer.push(gray_frame)
-                
-                if not is_ready:
-                    if verbose and frame_idx == 0:
-                        logger.info("Buffering initial frame...")
-                    continue
-                
-                # Process frame pair
-                frame_prev, frame_curr = self.frame_buffer.get_pair()
-                
+                # Stream frame into stateful detector
                 start_time = self._get_time()
-                saliency, vectors = self.detector.process_frame(frame_prev, frame_curr)
+                # For video files we derive timestamps from the container FPS.
+                # In real robotic use cases, timestamp would come from the camera
+                # (or pass timestamp explicitly via MotionDetector.update).
+                timestamp = frame_idx * frame_dt
+                result = self.detector.update(gray_frame, timestamp=timestamp)
                 latency = self._get_time() - start_time
+                
+                if result is None:
+                    if verbose and frame_idx == 0:
+                        logger.info("Warming up initial frame...")
+                    continue
+                    
+                saliency, vectors = result.as_legacy()
                 
                 self.performance.record_frame(latency)
                 
@@ -107,8 +122,8 @@ class NeuroSightDetector:
                     if output_writer is None:
                         output_writer = OutputWriter(
                             output_video,
-                            fps=30.0,
-                            frame_size=(frame_curr.shape[1], frame_curr.shape[0])
+                            fps=output_fps,
+                            frame_size=(frame.shape[1], frame.shape[0])
                         )
                     
                     # Create output frame (use original RGB frame, not the grayscale buffer frame)
@@ -136,6 +151,15 @@ class NeuroSightDetector:
             if output_writer is not None:
                 output_writer.release()
             
+            if final_saliency is None:
+                if last_shape is None:
+                    raise IOError(f"No frames could be read from video: {video_path}")
+                logger.warning(
+                    "Video produced no motion frames (fewer than 2 frames); "
+                    "returning a zero saliency map."
+                )
+                final_saliency = np.zeros(last_shape, dtype=np.float32)
+
             if verbose:
                 logger.info(f"Video processing complete. {self.performance.report()}")
             
@@ -169,7 +193,8 @@ class NeuroSightDetector:
     def process_pair(
         self,
         frame_prev: np.ndarray,
-        frame_curr: np.ndarray
+        frame_curr: np.ndarray,
+        timestamp: Optional[float] = None
     ) -> MotionResult:
         """
         Process a single frame pair and return a structured MotionResult.
@@ -178,7 +203,7 @@ class NeuroSightDetector:
         richer diagnostics. `process_frame_pair()` remains available for legacy
         callers.
         """
-        return self.detector.process_pair(frame_prev, frame_curr)
+        return self.detector.process_pair(frame_prev, frame_curr, timestamp=timestamp)
 
     def get_performance_stats(self) -> Dict[str, float]:
         """Get performance metrics."""
@@ -197,7 +222,6 @@ class NeuroSightDetector:
 
 # Example usage
 if __name__ == "__main__":
-    import sys
     
     logging.basicConfig(level=logging.INFO)
     
@@ -212,7 +236,7 @@ if __name__ == "__main__":
     
     # Initialize and process
     detector = NeuroSightDetector(
-        connectome_path="connectome_weights.json",
+        connectome_path=None,
         tile_size=8,
         resize_width=320
     )

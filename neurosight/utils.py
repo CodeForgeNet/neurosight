@@ -1,17 +1,42 @@
 """
-Phase 3: Frame Pipeline & Utilities
+Frame pipeline & utilities.
+
 Frame buffering, video I/O, normalization, performance metrics.
 """
 
-from typing import Optional, Tuple, Iterator, Any
-import typing
-from collections import deque
-import numpy as np
-import cv2
 import logging
 import time
+import typing
+from collections import deque
+from dataclasses import dataclass
+from typing import Any, Iterator, Optional, Tuple
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VideoProperties:
+    """Container metadata read from a video file."""
+
+    fps: float
+    frame_count: int
+    width: int
+    height: int
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds (0.0 when unknown)."""
+        if self.fps > 0 and self.frame_count > 0:
+            return self.frame_count / self.fps
+        return 0.0
+
+    @property
+    def frame_interval(self) -> float:
+        """Seconds between consecutive frames (0.0 when FPS is unknown)."""
+        return 1.0 / self.fps if self.fps > 0 else 0.0
 
 
 class FrameBuffer:
@@ -46,7 +71,10 @@ class FrameBuffer:
     def get_pair(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """
         Get (previous_frame, current_frame) pair.
-        
+
+        The returned arrays are the buffer's internal copies (frames were copied
+        on :meth:`push`). Do not mutate them in place; treat them as read-only.
+
         Returns:
             (frame_N-1, frame_N) if buffer is full, else None
         """
@@ -79,6 +107,37 @@ class VideoProcessor:
                          None = no resizing
         """
         self.resize_width = resize_width
+        self._last_properties: Optional[VideoProperties] = None
+
+    @property
+    def last_video_properties(self) -> Optional[VideoProperties]:
+        """Metadata for the most recent video opened via :meth:`read_video`.
+
+        Available once iteration of ``read_video`` has started; ``None`` before that.
+        """
+        return self._last_properties
+
+    def _open(self, video_path: str) -> Tuple["cv2.VideoCapture", VideoProperties]:
+        """Open a capture and read its container metadata."""
+        cap = cv2.VideoCapture(video_path)
+
+        if not cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            raise IOError(f"Cannot read video: {video_path}")
+
+        props = VideoProperties(
+            fps=float(cap.get(cv2.CAP_PROP_FPS) or 0.0),
+            frame_count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+            height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+        )
+        return cap, props
+
+    def probe_video(self, video_path: str) -> VideoProperties:
+        """Read container metadata without decoding frames."""
+        cap, props = self._open(video_path)
+        cap.release()
+        return props
 
     def read_video(self, video_path: str) -> Iterator[Tuple[int, np.ndarray]]:
         """
@@ -90,18 +149,17 @@ class VideoProcessor:
         Yields:
             (frame_index, frame_array)
         """
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            logger.error(f"Failed to open video: {video_path}")
-            raise IOError(f"Cannot read video: {video_path}")
-        
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        logger.info(f"Video: {total_frames} frames @ {fps} FPS")
-        
+        cap, props = self._open(video_path)
+        self._last_properties = props
+
+        if props.frame_count and props.fps > 0:
+            logger.info(
+                f"Video: {props.frame_count} frames @ {props.fps:.2f} FPS "
+                f"({props.duration:.1f}s)"
+            )
+        else:
+            logger.info(f"Video opened: {video_path}")
+
         frame_idx = 0
         try:
             while True:
@@ -189,7 +247,7 @@ class PerformanceMonitor:
         """Get average frame processing latency in milliseconds."""
         if len(self.frame_times) == 0:
             return 0.0
-        return np.mean(list(self.frame_times)) * 1000.0
+        return float(np.mean(list(self.frame_times)) * 1000.0)
 
     def report(self) -> str:
         """Generate performance report."""
@@ -229,7 +287,7 @@ class SaliencyMapVisualizer:
         colored = cv2.applyColorMap(saliency_8bit, colormap)
         
         # Convert BGR to RGB
-        return cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+        return typing.cast(np.ndarray, cv2.cvtColor(colored, cv2.COLOR_BGR2RGB))
 
     @staticmethod
     def overlay_vectors(
@@ -260,7 +318,7 @@ class SaliencyMapVisualizer:
             'right': (arrow_scale * tile_size / 3, 0)
         }
         
-        for tile_key, data in motion_vectors.items():
+        for data in motion_vectors.values():
             direction = data['direction']
             confidence = data['confidence']
             y, x = data['y'], data['x']
@@ -309,7 +367,7 @@ class OutputWriter:
         self.output_path = output_path
         self.fps = fps
         self.frame_size = frame_size
-        self.writer = None
+        self.writer: Optional[Any] = None
 
     def write_frame(self, frame: np.ndarray):
         """

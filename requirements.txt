@@ -1,10 +1,14 @@
 # Core dependencies for neurosight
 numpy>=1.24.0
-opencv-python>=4.8.0
-scipy>=1.11.0
+# Headless OpenCV is enough for the library itself. Install `opencv-python`
+# instead if you want to run the interactive examples (cv2.imshow / webcam).
+opencv-python-headless>=4.8.0
 
 # Optional: for connectome extraction (Phase 1 only, not shipped)
 # neuprint-python>=0.4.23
+
+# Optional: interactive examples / webcam display
+# opencv-python>=4.8.0
 
 # Development dependencies (for testing, linting, building)
 # pytest>=7.0

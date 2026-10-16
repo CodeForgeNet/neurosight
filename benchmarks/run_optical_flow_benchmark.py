@@ -1,9 +1,10 @@
-import numpy as np
-import cv2
-import time
-import sys
 import os
+import sys
+import time
 from collections import Counter
+
+import cv2
+import numpy as np
 
 # Add parent directory to path to import neurosight
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -11,6 +12,9 @@ from neurosight.detector import MotionDetector
 
 CONFIDENCE_THRESHOLD = 0.01
 FARNEBACK_DEAD_ZONE = 0.5
+# NeuroSight is expected to recover all cardinal directions on these synthetic
+# stimuli; this is a regression threshold, not a general accuracy claim.
+EXPECTED_ACCURACY = 100.0
 
 
 def generate_synthetic_motion(width=256, height=256, speed=4, direction='right'):
@@ -162,11 +166,14 @@ def run_benchmark():
     accuracy = total_correct / total_tests * 100
     farneback_accuracy = total_farneback_correct / total_tests * 100
     print("-" * 50)
-    print(f"NeuroSight Accuracy: {accuracy:.1f}%")
+    print(f"NeuroSight Accuracy: {accuracy:.1f}% (expected {EXPECTED_ACCURACY:.0f}% on these stimuli)")
     print(f"Farneback Mean-Flow Accuracy: {farneback_accuracy:.1f}%")
     print("-" * 50)
     
-    return int(accuracy == 100)
+    passed = accuracy >= EXPECTED_ACCURACY
+    if not passed:
+        print("REGRESSION: NeuroSight missed a cardinal direction on synthetic stimuli.")
+    return int(passed)
 
 if __name__ == "__main__":
     success = run_benchmark()

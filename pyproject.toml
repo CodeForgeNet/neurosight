@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "neurosight"
-version = "0.1.1"
+version = "0.1.2"
 description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "CodeForgeNet"}
 ]
 requires-python = ">=3.10"
 keywords = ["motion-detection", "neuroscience", "fly-brain", "connectome", "computer-vision", "edge-ai"]
@@ -28,8 +28,7 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.24.0",
-    "opencv-python>=4.8.0",
-    "scipy>=1.11.0",
+    "opencv-python-headless>=4.8.0",
 ]
 
 [project.optional-dependencies]
@@ -38,28 +37,54 @@ dev = [
     "pytest-cov>=4.0",
     "black>=23.0",
     "flake8>=6.0",
+    "ruff>=0.4",
     "mypy>=1.0",
+]
+gui = [
+    # Needed for the interactive examples (cv2.imshow / webcam). The core
+    # library only requires the headless build.
+    "opencv-python>=4.8.0",
 ]
 neuprint = [
     "neuprint-python>=0.4.23",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/neurosight"
-Documentation = "https://github.com/yourusername/neurosight#readme"
-Repository = "https://github.com/yourusername/neurosight"
-"Bug Tracker" = "https://github.com/yourusername/neurosight/issues"
+Homepage = "https://github.com/CodeForgeNet/neurosight"
+Documentation = "https://github.com/CodeForgeNet/neurosight#readme"
+Repository = "https://github.com/CodeForgeNet/neurosight"
+"Bug Tracker" = "https://github.com/CodeForgeNet/neurosight/issues"
 
 [tool.setuptools]
 packages = ["neurosight"]
+include_package_data = true
 
 [tool.setuptools.package-data]
-"*" = ["connectome_weights.json"]
+"*" = ["connectome_weights.json", "py.typed"]
 
 [tool.pytest.ini_options]
-testpaths = ["."]
+testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-v"
+
+[tool.coverage.run]
+source = ["neurosight"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
 
 [tool.black]
 line-length = 100
