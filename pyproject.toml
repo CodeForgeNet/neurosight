@@ -57,7 +57,6 @@ Repository = "https://github.com/CodeForgeNet/neurosight"
 
 [tool.setuptools]
 packages = ["neurosight"]
-include_package_data = true
 
 [tool.setuptools.package-data]
 "*" = ["connectome_weights.json", "py.typed"]
