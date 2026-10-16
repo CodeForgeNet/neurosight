@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from neurosight.detector import MotionDetector, NeuroSightConfig
 
@@ -57,6 +58,28 @@ def test_looming_and_ttc():
     assert looming > 0.05
     assert ttc is not None
     assert ttc > 0.0
+
+def test_looming_ttc_scales_with_dt():
+    """Time-to-contact should be reported in seconds when dt is supplied."""
+    config = NeuroSightConfig(tile_size=8, enable_looming=True)
+    detector = MotionDetector(config=config)
+
+    H, W = 64, 64
+    motion = np.zeros((H, W, 2), dtype=np.float32)
+    saliency = np.zeros((H, W), dtype=np.float32)
+
+    y, x = np.mgrid[0:H, 0:W]
+    cy, cx = H // 2, W // 2
+    motion[..., 0] = (x - cx) * 0.1
+    motion[..., 1] = (y - cy) * 0.1
+    saliency.fill(1.0)
+
+    _, ttc_frames = detector._compute_looming_and_ttc(motion, saliency)
+    _, ttc_seconds = detector._compute_looming_and_ttc(motion, saliency, dt=0.033)
+
+    assert ttc_frames is not None and ttc_seconds is not None
+    assert ttc_seconds == pytest.approx(ttc_frames * 0.033)
+
 
 def test_steering_signal():
     config = NeuroSightConfig(tile_size=8, enable_steering=True)

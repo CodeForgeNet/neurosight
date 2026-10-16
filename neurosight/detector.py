@@ -7,6 +7,7 @@ L1/L2 → medulla → T4/T5 direction-selective neurons.
 import json
 import logging
 import typing
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -125,11 +126,15 @@ class NeuroSightConfig:
 
 @dataclass
 class MotionResult:
-    """Structured result returned by the newer motion API."""
+    """Structured result returned by the newer motion API.
+
+    The frame-resolution direction and pathway maps are expanded lazily from
+    their tile-resolution grids, so constructing a result is cheap and those
+    arrays are only allocated when a caller actually reads them.
+    """
 
     saliency_map: np.ndarray
     motion_field: np.ndarray
-    direction_maps: Dict[str, np.ndarray]
     confidence_map: np.ndarray
     magnitude_map: np.ndarray
     angle_map: np.ndarray
@@ -146,15 +151,68 @@ class MotionResult:
     steering_signal: Optional[Dict[str, float]] = None
 
     diagnostics: Dict[str, Any] = field(default_factory=dict)
-    t4_maps: Dict[str, np.ndarray] = field(default_factory=dict)
-    t5_maps: Dict[str, np.ndarray] = field(default_factory=dict)
 
-    # Hidden fields for lazy evaluation of motion_vectors
-    _tile_direction: Optional[np.ndarray] = field(default=None, repr=False)
-    _tile_confidence: Optional[np.ndarray] = field(default=None, repr=False)
-    _tile_size: int = field(default=8, repr=False)
-    _frame_shape: Optional[Tuple[int, int]] = field(default=None, repr=False)
-    _motion_vectors_cache: Optional[Dict[str, Dict[str, Any]]] = field(default=None, repr=False)
+    # Tile-resolution grids backing the lazy map properties, plus caches.
+    _tile_direction: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
+    _tile_confidence: Optional[np.ndarray] = field(default=None, repr=False, compare=False)
+    _tile_size: int = field(default=8, repr=False, compare=False)
+    _frame_shape: Optional[Tuple[int, int]] = field(default=None, repr=False, compare=False)
+    _direction_grids: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+    _t4_grids: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+    _t5_grids: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+    _include_pathway: bool = field(default=False, repr=False, compare=False)
+    _motion_vectors_cache: Optional[Dict[str, Dict[str, Any]]] = field(default=None, repr=False, compare=False)
+    _direction_maps_cache: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+    _t4_maps_cache: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+    _t5_maps_cache: Optional[Dict[str, np.ndarray]] = field(default=None, repr=False, compare=False)
+
+    @staticmethod
+    def _expand(grid: np.ndarray, shape: Tuple[int, int]) -> np.ndarray:
+        """Paint a tile-resolution grid back to frame resolution."""
+        height, width = shape
+        return cv2.resize(grid, (width, height), interpolation=cv2.INTER_NEAREST).astype(np.float32)
+
+    def _expand_grids(
+        self,
+        grids: Optional[Dict[str, np.ndarray]],
+        cache: Optional[Dict[str, np.ndarray]],
+    ) -> Dict[str, np.ndarray]:
+        if cache is not None:
+            return cache
+        if grids is None or self._frame_shape is None:
+            return {}
+        return {
+            direction: self._expand(grid, self._frame_shape)
+            for direction, grid in grids.items()
+        }
+
+    @property
+    def direction_maps(self) -> Dict[str, np.ndarray]:
+        """Per-direction confidence grids at frame resolution (lazy)."""
+        maps = self._expand_grids(self._direction_grids, self._direction_maps_cache)
+        if maps:
+            self._direction_maps_cache = maps
+        return maps
+
+    @property
+    def t4_maps(self) -> Dict[str, np.ndarray]:
+        """ON-pathway (T4) response grids at frame resolution (lazy)."""
+        if not self._include_pathway:
+            return {}
+        maps = self._expand_grids(self._t4_grids, self._t4_maps_cache)
+        if maps:
+            self._t4_maps_cache = maps
+        return maps
+
+    @property
+    def t5_maps(self) -> Dict[str, np.ndarray]:
+        """OFF-pathway (T5) response grids at frame resolution (lazy)."""
+        if not self._include_pathway:
+            return {}
+        maps = self._expand_grids(self._t5_grids, self._t5_maps_cache)
+        if maps:
+            self._t5_maps_cache = maps
+        return maps
 
     @property
     def motion_vectors(self) -> Dict[str, Dict[str, Any]]:
@@ -194,6 +252,11 @@ class MotionDetector:
     """
     Motion detection using fly brain (T4/T5) architecture.
     Detects motion direction via ON (L1) and OFF (L2) pathways.
+
+    This detector is **stateful**: :meth:`update` mutates internal temporal state
+    (frame history, adaptation, ego-motion estimate) and is therefore **not
+    thread-safe**. Use one instance per stream/thread. For two-frame, stateless
+    use, call :meth:`process_pair`.
     """
 
     # Direction labels for T4/T5 subtypes
@@ -221,6 +284,10 @@ class MotionDetector:
     DEFAULT_SIGMOID_GAIN = 2.0       # Steepness of intensity response
     DEFAULT_SIGMOID_THRESHOLD = 0.5  # Half-saturation point (normalized intensity)
 
+    # Maximum number of cached per-shape shift masks (bounds memory when the
+    # input resolution varies over the lifetime of a detector).
+    SHIFT_MASK_CACHE_SIZE = 64
+
     def __init__(
         self,
         connectome_weights_path: str = "connectome_weights.json",
@@ -241,7 +308,7 @@ class MotionDetector:
         self.connectome_weights = self._load_weights(connectome_weights_path)
         self.inputs_order = self.connectome_weights.get('inputs_order', ["Mi1", "Mi4", "Mi9", "Tm1", "Tm2", "Tm3", "Tm4", "Tm9"])
         self.weights = self.connectome_weights.get('weights', self.connectome_weights)
-        self._shift_mask_cache: Dict[Tuple[int, int, int, int], np.ndarray] = {}
+        self._shift_mask_cache: "OrderedDict[Tuple[int, int, int, int], np.ndarray]" = OrderedDict()
         self._pathway_scale_cache: Dict[str, Tuple[float, float]] = {}
         
         self.sigmoid_gain = self.DEFAULT_SIGMOID_GAIN
@@ -448,21 +515,6 @@ class MotionDetector:
         magnitude_map = np.linalg.norm(motion_field, axis=2).astype(np.float32)
         angle_map = np.arctan2(motion_field[..., 1], motion_field[..., 0]).astype(np.float32)
         angle_map = np.where(magnitude_map > 0, angle_map, 0.0).astype(np.float32)
-        direction_maps = {
-            direction: self._expand_tile_grid(direction_grids[direction], H, W)
-            for direction in self.DIRECTIONS
-        }
-        t4_maps = {}
-        t5_maps = {}
-        if self.config.include_pathway_maps:
-            t4_maps = {
-                direction: self._expand_tile_grid(t4_grids[direction], H, W)
-                for direction in self.DIRECTIONS
-            }
-            t5_maps = {
-                direction: self._expand_tile_grid(t5_grids[direction], H, W)
-                for direction in self.DIRECTIONS
-            }
         valid_tile_count = int(np.count_nonzero(tile_direction >= 0))
         
         active = saliency_map > 0
@@ -507,13 +559,12 @@ class MotionDetector:
         
         # Phase 9 Robotics features
         regions = self._extract_regions(saliency_map, ego_compensated_field)
-        looming_score, ttc = self._compute_looming_and_ttc(ego_compensated_field, saliency_map)
+        looming_score, ttc = self._compute_looming_and_ttc(ego_compensated_field, saliency_map, dt=dt)
         steering_signal = self._compute_steering_signal(saliency_map)
 
         return MotionResult(
             saliency_map=saliency_map,
             motion_field=motion_field,
-            direction_maps=direction_maps,
             confidence_map=saliency_map.copy(),
             magnitude_map=magnitude_map,
             angle_map=angle_map,
@@ -526,8 +577,10 @@ class MotionDetector:
             time_to_contact=ttc,
             steering_signal=steering_signal,
             diagnostics=diagnostics,
-            t4_maps=t4_maps,
-            t5_maps=t5_maps,
+            _direction_grids=direction_grids,
+            _t4_grids=t4_grids,
+            _t5_grids=t5_grids,
+            _include_pathway=self.config.include_pathway_maps,
             _tile_direction=tile_direction,
             _tile_confidence=tile_confidence,
             _tile_size=self.tile_size,
@@ -609,21 +662,6 @@ class MotionDetector:
         magnitude_map = np.linalg.norm(motion_field, axis=2).astype(np.float32)
         angle_map = np.arctan2(motion_field[..., 1], motion_field[..., 0]).astype(np.float32)
         angle_map = np.where(magnitude_map > 0, angle_map, 0.0).astype(np.float32)
-        direction_maps = {
-            direction: self._expand_tile_grid(direction_grids[direction], height, width)
-            for direction in self.DIRECTIONS
-        }
-        t4_maps = {}
-        t5_maps = {}
-        if self.config.include_pathway_maps:
-            t4_maps = {
-                direction: self._expand_tile_grid(t4_grids[direction], height, width)
-                for direction in self.DIRECTIONS
-            }
-            t5_maps = {
-                direction: self._expand_tile_grid(t5_grids[direction], height, width)
-                for direction in self.DIRECTIONS
-            }
 
         active = saliency_map > 0
         if np.any(active):
@@ -651,13 +689,14 @@ class MotionDetector:
 
         ego_compensated_field = motion_field.copy()
         regions = self._extract_regions(saliency_map, ego_compensated_field)
-        looming_score, ttc = self._compute_looming_and_ttc(ego_compensated_field, saliency_map)
+        looming_score, ttc = self._compute_looming_and_ttc(
+            ego_compensated_field, saliency_map, dt=self.config.default_dt
+        )
         steering_signal = self._compute_steering_signal(saliency_map)
 
         return MotionResult(
             saliency_map=saliency_map,
             motion_field=motion_field,
-            direction_maps=direction_maps,
             confidence_map=saliency_map.copy(),
             magnitude_map=magnitude_map,
             angle_map=angle_map,
@@ -670,8 +709,10 @@ class MotionDetector:
             time_to_contact=ttc,
             steering_signal=steering_signal,
             diagnostics=diagnostics,
-            t4_maps=t4_maps,
-            t5_maps=t5_maps,
+            _direction_grids=direction_grids,
+            _t4_grids=t4_grids,
+            _t5_grids=t5_grids,
+            _include_pathway=self.config.include_pathway_maps,
             _tile_direction=tile_direction,
             _tile_confidence=tile_confidence,
             _tile_size=self.tile_size,
@@ -894,8 +935,10 @@ class MotionDetector:
         """Mask shifted pixels whose source stays inside the same detector tile."""
         height, width = shape
         cache_key = (height, width, dy, dx)
-        if cache_key in self._shift_mask_cache:
-            return self._shift_mask_cache[cache_key]
+        cached = self._shift_mask_cache.get(cache_key)
+        if cached is not None:
+            self._shift_mask_cache.move_to_end(cache_key)
+            return cached
 
         y_tiles = (np.arange(height) // self.tile_size)[:, None]
         x_tiles = (np.arange(width) // self.tile_size)[None, :]
@@ -903,6 +946,8 @@ class MotionDetector:
         shifted_tile_ids = self._shift_no_wrap(tile_ids.astype(np.int32), dy, dx)
         mask: np.ndarray = (shifted_tile_ids == tile_ids).astype(np.float32)
         self._shift_mask_cache[cache_key] = mask
+        if len(self._shift_mask_cache) > self.SHIFT_MASK_CACHE_SIZE:
+            self._shift_mask_cache.popitem(last=False)
         return mask
 
     def _expand_tile_grid(self, tile_grid: np.ndarray, height: int, width: int) -> np.ndarray:
@@ -995,7 +1040,18 @@ class MotionDetector:
             
         return regions
 
-    def _compute_looming_and_ttc(self, motion_field: np.ndarray, saliency_map: np.ndarray) -> Tuple[float, Optional[float]]:
+    def _compute_looming_and_ttc(
+        self,
+        motion_field: np.ndarray,
+        saliency_map: np.ndarray,
+        dt: Optional[float] = None,
+    ) -> Tuple[float, Optional[float]]:
+        """Estimate looming (expansion) magnitude and time-to-contact.
+
+        Returns ``(looming_score, time_to_contact)``. ``time_to_contact`` is in
+        seconds when a positive ``dt`` (frame interval) is supplied, otherwise in
+        frames. It is ``None`` when expansion is below the confidence floor.
+        """
         if not self.config.enable_looming:
             return 0.0, None
             
@@ -1026,9 +1082,11 @@ class MotionDetector:
         
         ttc = None
         if looming_score > 0.05:
-            # tau = 2 / divergence
+            # tau = 2 / divergence gives time in frame units; convert to seconds.
             ttc = 2.0 / looming_score
-            
+            if dt is not None and dt > 0:
+                ttc *= dt
+                
         return looming_score, ttc
 
     def _compute_steering_signal(self, saliency_map: np.ndarray) -> Dict[str, float]:

@@ -240,6 +240,36 @@ class TestMotionDetector:
         assert pair_dir == direction
         assert stream_dir == direction
 
+    def test_direction_and_pathway_maps_are_lazy_and_cached(self, temp_connectome):
+        """Direction/pathway maps expand on demand and are cached."""
+        from neurosight.detector import NeuroSightConfig
+        detector = MotionDetector(
+            connectome_weights_path=temp_connectome,
+            config=NeuroSightConfig(tile_size=8),
+        )
+        frame1, frame2 = make_translating_square('right')
+        result = detector.process_pair(frame1, frame2)
+
+        # Not expanded until read.
+        assert result._direction_maps_cache is None
+        assert result._t4_maps_cache is None
+
+        first = result.direction_maps
+        assert set(first) == {'up', 'down', 'left', 'right'}
+        assert result._direction_maps_cache is first
+        assert result.direction_maps is first
+
+    def test_pathway_maps_empty_when_disabled(self, temp_connectome):
+        from neurosight.detector import NeuroSightConfig
+        detector = MotionDetector(
+            connectome_weights_path=temp_connectome,
+            config=NeuroSightConfig(tile_size=8, include_pathway_maps=False),
+        )
+        frame1, frame2 = make_translating_square('right')
+        result = detector.process_pair(frame1, frame2)
+        assert result.t4_maps == {}
+        assert result.t5_maps == {}
+
     def test_process_pair_static_active_tiles_below_one_percent(self, temp_connectome):
         """Test static scenes do not produce meaningful active tiles."""
         detector = MotionDetector(connectome_weights_path=temp_connectome, tile_size=8)
