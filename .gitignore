@@ -4,10 +4,12 @@ venv/
 test_venv/
 .pytest_cache/
 .coverage
+htmlcov/
 dist/
 build/
 *.egg-info/
 PROJECT_STRUCTURE.md
 tests_output/
+outputs/
 *.mp4
 .DS_Store

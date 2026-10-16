@@ -9,7 +9,7 @@ description = "Motion detection library using fly optic lobe architecture (VFB c
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "CodeForgeNet"}
 ]
 requires-python = ">=3.10"
 keywords = ["motion-detection", "neuroscience", "fly-brain", "connectome", "computer-vision", "edge-ai"]
@@ -28,8 +28,7 @@ classifiers = [
 
 dependencies = [
     "numpy>=1.24.0",
-    "opencv-python>=4.8.0",
-    "scipy>=1.11.0",
+    "opencv-python-headless>=4.8.0",
 ]
 
 [project.optional-dependencies]
@@ -40,15 +39,20 @@ dev = [
     "flake8>=6.0",
     "mypy>=1.0",
 ]
+gui = [
+    # Needed for the interactive examples (cv2.imshow / webcam). The core
+    # library only requires the headless build.
+    "opencv-python>=4.8.0",
+]
 neuprint = [
     "neuprint-python>=0.4.23",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/neurosight"
-Documentation = "https://github.com/yourusername/neurosight#readme"
-Repository = "https://github.com/yourusername/neurosight"
-"Bug Tracker" = "https://github.com/yourusername/neurosight/issues"
+Homepage = "https://github.com/CodeForgeNet/neurosight"
+Documentation = "https://github.com/CodeForgeNet/neurosight#readme"
+Repository = "https://github.com/CodeForgeNet/neurosight"
+"Bug Tracker" = "https://github.com/CodeForgeNet/neurosight/issues"
 
 [tool.setuptools]
 packages = ["neurosight"]

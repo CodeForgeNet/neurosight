@@ -6,12 +6,35 @@ Frame buffering, video I/O, normalization, performance metrics.
 from typing import Optional, Tuple, Iterator, Any
 import typing
 from collections import deque
+from dataclasses import dataclass
 import numpy as np
 import cv2
 import logging
 import time
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class VideoProperties:
+    """Container metadata read from a video file."""
+
+    fps: float
+    frame_count: int
+    width: int
+    height: int
+
+    @property
+    def duration(self) -> float:
+        """Duration in seconds (0.0 when unknown)."""
+        if self.fps > 0 and self.frame_count > 0:
+            return self.frame_count / self.fps
+        return 0.0
+
+    @property
+    def frame_interval(self) -> float:
+        """Seconds between consecutive frames (0.0 when FPS is unknown)."""
+        return 1.0 / self.fps if self.fps > 0 else 0.0
 
 
 class FrameBuffer:
@@ -79,6 +102,37 @@ class VideoProcessor:
                          None = no resizing
         """
         self.resize_width = resize_width
+        self._last_properties: Optional[VideoProperties] = None
+
+    @property
+    def last_video_properties(self) -> Optional[VideoProperties]:
+        """Metadata for the most recent video opened via :meth:`read_video`.
+
+        Available once iteration of ``read_video`` has started; ``None`` before that.
+        """
+        return self._last_properties
+
+    def _open(self, video_path: str) -> Tuple["cv2.VideoCapture", VideoProperties]:
+        """Open a capture and read its container metadata."""
+        cap = cv2.VideoCapture(video_path)
+
+        if not cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            raise IOError(f"Cannot read video: {video_path}")
+
+        props = VideoProperties(
+            fps=float(cap.get(cv2.CAP_PROP_FPS) or 0.0),
+            frame_count=int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
+            width=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+            height=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+        )
+        return cap, props
+
+    def probe_video(self, video_path: str) -> VideoProperties:
+        """Read container metadata without decoding frames."""
+        cap, props = self._open(video_path)
+        cap.release()
+        return props
 
     def read_video(self, video_path: str) -> Iterator[Tuple[int, np.ndarray]]:
         """
@@ -90,18 +144,17 @@ class VideoProcessor:
         Yields:
             (frame_index, frame_array)
         """
-        cap = cv2.VideoCapture(video_path)
-        
-        if not cap.isOpened():
-            logger.error(f"Failed to open video: {video_path}")
-            raise IOError(f"Cannot read video: {video_path}")
-        
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        logger.info(f"Video: {total_frames} frames @ {fps} FPS")
-        
+        cap, props = self._open(video_path)
+        self._last_properties = props
+
+        if props.frame_count and props.fps > 0:
+            logger.info(
+                f"Video: {props.frame_count} frames @ {props.fps:.2f} FPS "
+                f"({props.duration:.1f}s)"
+            )
+        else:
+            logger.info(f"Video opened: {video_path}")
+
         frame_idx = 0
         try:
             while True:

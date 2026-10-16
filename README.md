@@ -62,41 +62,78 @@ saliency, motion_vectors = detector.process_video(
 
 ### Real-time / Frame-by-Frame Processing
 
-If you are reading from a webcam or integrating into a larger robotics pipeline, you can process individual frame pairs in real time:
+If you have exactly two frames, use the stateless pair API:
+
+```python
+from neurosight.detector import MotionDetector
+
+detector = MotionDetector()
+result = detector.process_pair(previous_frame, current_frame)
+
+print(result.global_vector)
+saliency = result.saliency_map
+```
+
+If you are reading from a webcam or integrating into a larger robotics pipeline, use the stateful API.
 
 ```python
 import cv2
-from neurosight import NeuroSightDetector
+import time
+from neurosight.detector import MotionDetector, NeuroSightConfig
 
-detector = NeuroSightDetector()
+# Use a preset for robust edge-device processing
+config = NeuroSightConfig.preset_robust(tile_size=8)
+detector = MotionDetector(config=config)
 cap = cv2.VideoCapture(0)
-
-ret, frame_prev = cap.read()
 
 while True:
     ret, frame_curr = cap.read()
     if not ret: break
     
-    # Detect motion between two frames
-    saliency, vectors = detector.process_frame_pair(frame_prev, frame_curr)
+    # Update the stateful detector
+    result = detector.update(frame_curr, timestamp=time.time())
     
-    # Display the result
-    cv2.imshow("Motion Saliency", (saliency * 255).astype('uint8'))
+    if result is not None:
+        # Display the result
+        cv2.imshow("Motion Saliency", (result.saliency_map * 255).astype('uint8'))
+        
+        # Check Robotics outputs
+        if result.looming_score and result.looming_score > 0.05:
+            print(f"Collision imminent! TTC: {result.time_to_contact:.2f}s")
+            
     if cv2.waitKey(1) == ord('q'): break
-    
-    frame_prev = frame_curr
 ```
+
+### Parameter Presets
+
+NeuroSight ships with several config presets to help you tune for your use case immediately:
+
+| Preset Method | Use Case | Features |
+|--------------|----------|----------|
+| `preset_education()` | Visualizing basic biological principles. | Slow but highly explainable. Robotics/robustness features disabled. |
+| `preset_edge_fast()` | High-FPS operation on Raspberry Pi/Edge. | Single spatial scale. Heavy denoising and regions disabled. |
+| `preset_robust()` | Handheld cameras, noisy environments. | Heavy temporal denoising, ego-motion, and flicker suppression on. |
+| `preset_looming()` | Collision avoidance on moving robots. | Multi-scale enabled. Region extraction, looming, and steering enabled. |
+
+You can find more detailed runnable examples in the `examples/` directory!
 
 ## What it Provides
 
-### Saliency Map
-The library returns a `saliency` map, which is a 2D NumPy array representing the intensity of motion detected across the visual field (scaled from `0.0` to `1.0`).
+The core detector returns a strongly-typed `MotionResult` dataclass containing:
 
-### Motion Vectors
-For more precise data, the library returns a dictionary of motion vectors broken down into local spatial tiles (e.g., 8x8 pixels). Each tile contains:
-- `direction`: The dominant motion direction (`up`, `down`, `left`, `right`)
-- `confidence`: The strength of the detection (`0.0 - 1.0`)
-- `x`, `y`: The tile coordinates
+### 1. Motion Fields & Saliency
+- `saliency_map`: A 2D NumPy array representing the intensity of motion detected (scaled from `0.0` to `1.0`).
+- `motion_field`: A `(H, W, 2)` NumPy array representing the horizontal and vertical unitless motion energy.
+- `direction_maps`: A dictionary of `up`, `down`, `left`, `right` response grids.
+
+### 2. Robotics & Navigation (Optional)
+- `regions`: A list of dictionaries representing isolated moving components (includes `bbox`, `centroid`, `area`, `dominant_vector`).
+- `looming_score`: Float representing global expansion magnitude (useful for collision).
+- `time_to_contact`: Heuristic time-to-contact estimate when looming confidence is sufficient.
+- `steering_signal`: A dictionary containing a `-1.0` to `1.0` `turn` signal (avoidance hook), `forward_caution`, and `collision_urgency`.
+
+### 3. Legacy Dictionary
+- `motion_vectors`: Lazy-evaluated backward compatibility property that computes per-tile vector summaries (slower).
 
 ## Architecture & Biological Background
 
@@ -109,20 +146,19 @@ Fly-inspired motion detection is an established research area. NeuroSight packag
 
 ## Performance
 
-Indicative benchmark on Intel i7-12700K, 1280×720 video:
+Current local smoke check using `NeuroSightConfig.preset_edge_fast(tile_size=8)` on a 640×480 synthetic frame pair:
 
-| Metric | NeuroSight | OpenCV OpticalFlow | TensorFlow RAFT |
-|--------|-----------|-------------------|-----------------|
-| FPS | 45-50 | 30-35 | 5-10 (GPU) |
-| Latency (ms) | 20-25 | 28-35 | 100+ |
-| Memory (MB) | 15 | 25 | 500+ |
-| Model size | <1MB | N/A | 200MB |
+| Metric | NeuroSight |
+|--------|-----------:|
+| Mean latency | 15.68 ms |
+| p95 latency | 18.42 ms |
+| Mean throughput | 63.8 FPS |
 
-These figures are intended as rough positioning, not a claim of universal accuracy or speed. Real performance depends on frame size, tile size, hardware, OpenCV build, and the scene being processed.
+These figures are a local sanity check, not a published hardware benchmark. Real performance depends on frame size, tile size, hardware, OpenCV build, enabled options, and the scene being processed.
 
 ### Directional Synthetic Benchmark
 
-NeuroSight also includes a small directional benchmark using a drifting sinusoidal grating (`period=32px`, `speed=4px/frame`) across the four cardinal directions:
+NeuroSight also includes a small directional benchmark using both a translating square and a drifting sinusoidal grating across the four cardinal directions:
 
 ```bash
 python benchmarks/run_optical_flow_benchmark.py
@@ -130,16 +166,14 @@ python benchmarks/run_optical_flow_benchmark.py
 
 | Metric | NeuroSight | Farneback mean-flow baseline |
 |--------|-----------:|-----------------------------:|
-| Direction accuracy | 100.0% | 0.0% |
-| Valid NeuroSight tiles | 1024 / 1024 | N/A |
-| Mean NeuroSight confidence | 0.258 | N/A |
+| Direction accuracy | 100.0% | 50.0% |
 
-This benchmark tests direction recovery on a periodic grating. Farneback is summarized by the mean dense-flow vector, which can collapse toward zero on this stimulus with the current parameters. Treat this as a scoped synthetic benchmark, not a general claim that classical optical flow fails.
+This benchmark tests direction recovery on simple synthetic stimuli. Farneback is summarized by a masked mean dense-flow vector, which can collapse toward zero on periodic gratings with the current parameters. Treat this as a scoped synthetic benchmark, not a general claim that classical optical flow fails.
 
 ## FAQ
 
 **Q: Is this better than optical flow?**  
-A: Not generally. NeuroSight is complementary: it provides lightweight directional motion saliency, while classical and deep optical-flow methods are usually better when you need dense, metric flow vectors.
+A: Not generally. NeuroSight is complementary: it provides lightweight directional motion saliency and immediate robotics abstractions (steering, looming). Classical and deep optical-flow methods are usually better when you need dense, *calibrated metric* flow vectors (i.e. pixel displacement).
 
 **Q: Is the fly-brain idea new?**  
 A: No. Hassenstein-Reichardt correlators and insect-inspired motion detectors have a long research history. NeuroSight's value is packaging the idea into a small, approachable Python library with connectome-weighted T4/T5-style directions.
