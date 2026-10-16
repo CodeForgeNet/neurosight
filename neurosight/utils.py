@@ -71,7 +71,10 @@ class FrameBuffer:
     def get_pair(self) -> Optional[Tuple[np.ndarray, np.ndarray]]:
         """
         Get (previous_frame, current_frame) pair.
-        
+
+        The returned arrays are the buffer's internal copies (frames were copied
+        on :meth:`push`). Do not mutate them in place; treat them as read-only.
+
         Returns:
             (frame_N-1, frame_N) if buffer is full, else None
         """
