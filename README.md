@@ -6,7 +6,7 @@
 
 **Lightweight motion detection inspired by the fly optic lobe.**
 
-![NeuroSight Demo](assets/demo.gif)
+![NeuroSight Demo](https://raw.githubusercontent.com/CodeForgeNet/neurosight/main/assets/demo.gif)
 
 A lightweight, CPU-friendly motion detection library inspired by the *Drosophila* (fruit fly) visual system. NeuroSight implements a Hassenstein-Reichardt-style correlator and uses extracted T4/T5 connectome weights to produce directional motion saliency from ordinary video frames.
 
@@ -143,6 +143,17 @@ Fly-inspired motion detection is an established research area. NeuroSight packag
 - **Medulla Interneurons**: Signals from photoreceptors are split into L1 (light-sensitive) and L2 (dark-sensitive) channels. They pass through medulla interneurons (Mi1, Tm3, etc.) which act as temporal delay lines.
 - **Hassenstein-Reichardt Correlator**: By multiplying a delayed signal from one photoreceptor with an undelayed signal from a neighboring one, the brain determines direction and speed.
 - **Connectome Weights**: The included weights are derived from *Drosophila* hemibrain connectivity and normalized for this implementation.
+
+### Data provenance
+
+The bundled `t4_*`/`t5_*` weighting vectors are normalized summaries of
+*Drosophila* hemibrain (Janelia) connectivity, computed offline and shipped as
+static data (`neurosight/data/connectome_weights.json`, mirrored in
+`neurosight/connectome_weights_data.py`). The library performs **no network
+calls at runtime**. Re-derivation from a NeuPrint token is an optional offline
+step (see `PROJECT_STRUCTURE.md`); the extraction tooling is not required to use
+the package. Users redistributing derived weights should review the upstream
+Janelia/NeuPrint data terms.
 
 ## Performance
 

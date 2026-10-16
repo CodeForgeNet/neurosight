@@ -19,13 +19,13 @@ class NeuroSightDetector:
     User-facing API for NeuroSight motion detection.
     
     Example:
-        detector = NeuroSightDetector(connectome_path="connectome_weights.json")
+        detector = NeuroSightDetector()
         saliency, vectors = detector.process_video("input.mp4", output_video="output.mp4")
     """
 
     def __init__(
         self,
-        connectome_path: str = "connectome_weights.json",
+        connectome_path: Optional[str] = None,
         tile_size: int = 8,
         resize_width: Optional[int] = 320,
         config: Optional[NeuroSightConfig] = None,
@@ -34,9 +34,11 @@ class NeuroSightDetector:
         Initialize NeuroSight motion detector.
         
         Args:
-            connectome_path: Path to connectome_weights.json (from Phase 1)
+            connectome_path: Optional path to a connectome weights JSON file.
+                ``None`` (default) uses the weights bundled with the package.
             tile_size: Motion detection tile size (8 or 16)
             resize_width: Resize video to this width for efficiency (None = no resize)
+            config: Optional NeuroSightConfig preset/configuration
         """
         self.detector = MotionDetector(
             connectome_weights_path=connectome_path,
@@ -233,7 +235,7 @@ if __name__ == "__main__":
     
     # Initialize and process
     detector = NeuroSightDetector(
-        connectome_path="connectome_weights.json",
+        connectome_path=None,
         tile_size=8,
         resize_width=320
     )

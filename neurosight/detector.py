@@ -290,15 +290,17 @@ class MotionDetector:
 
     def __init__(
         self,
-        connectome_weights_path: str = "connectome_weights.json",
+        connectome_weights_path: Optional[str] = None,
         tile_size: int = 8,
         config: Optional[NeuroSightConfig] = None,
     ):
         """
         Initialize motion detector with biological weights.
-        
+
         Args:
-            connectome_weights_path: Path to connectome_weights.json (exported from Phase 1)
+            connectome_weights_path: Optional path to a ``connectome_weights.json``
+                file. When ``None`` (default) the weights bundled with the package
+                are used, so no external file is required.
             tile_size: Spatial resolution of motion detection (8x8 or 16x16 pixels)
         """
         self.config = config or NeuroSightConfig(tile_size=tile_size)
