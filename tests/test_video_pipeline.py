@@ -10,12 +10,12 @@ Covers:
 
 import json
 
+import cv2
 import numpy as np
 import pytest
-import cv2
 
-from neurosight.neurosight_api import NeuroSightDetector
 from neurosight.detector import MotionDetector
+from neurosight.neurosight_api import NeuroSightDetector
 from neurosight.utils import VideoProcessor, VideoProperties
 
 

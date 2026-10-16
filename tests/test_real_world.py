@@ -1,7 +1,8 @@
-import pytest
 import numpy as np
-import cv2
+import pytest
+
 from neurosight.detector import MotionDetector, NeuroSightConfig
+
 
 @pytest.fixture
 def temp_connectome(tmp_path):

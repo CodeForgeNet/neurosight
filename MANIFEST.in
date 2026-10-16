@@ -1,2 +1,3 @@
 include neurosight/data/connectome_weights.json
+include neurosight/py.typed
 include README.md

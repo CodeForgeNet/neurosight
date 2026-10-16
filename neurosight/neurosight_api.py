@@ -3,12 +3,13 @@ Phase 4: NeuroSight Detector API
 High-level interface: user processes video in 3 lines of code.
 """
 
-from typing import Tuple, Optional, Dict
-import numpy as np
 import logging
+from typing import Dict, Optional, Tuple
+
+import numpy as np
 
 from .detector import MotionDetector, MotionResult, NeuroSightConfig
-from .utils import VideoProcessor, PerformanceMonitor, SaliencyMapVisualizer, OutputWriter
+from .utils import OutputWriter, PerformanceMonitor, SaliencyMapVisualizer, VideoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,6 @@ class NeuroSightDetector:
 
 # Example usage
 if __name__ == "__main__":
-    import sys
     
     logging.basicConfig(level=logging.INFO)
     

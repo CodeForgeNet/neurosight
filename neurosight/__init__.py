@@ -14,9 +14,9 @@ Example:
 __version__ = "0.1.1"
 __author__ = "CodeForgeNet"
 
-from .neurosight_api import NeuroSightDetector
 from .detector import MotionDetector, MotionResult, NeuroSightConfig
-from .utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
+from .neurosight_api import NeuroSightDetector
+from .utils import FrameBuffer, SaliencyMapVisualizer, VideoProcessor
 
 __all__ = [
     'NeuroSightDetector',

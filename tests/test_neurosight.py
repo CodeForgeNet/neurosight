@@ -5,15 +5,15 @@ Validate motion detection accuracy and edge cases.
 Run: pytest test_neurosight.py -v
 """
 
-import pytest
-import numpy as np
 import json
-import tempfile
 import os
-from pathlib import Path
+import tempfile
+
+import numpy as np
+import pytest
 
 from neurosight.detector import MotionDetector, MotionResult
-from neurosight.utils import FrameBuffer, VideoProcessor, SaliencyMapVisualizer
+from neurosight.utils import FrameBuffer, SaliencyMapVisualizer, VideoProcessor
 
 
 def make_translating_square(direction, size=64, speed=2):
@@ -395,6 +395,38 @@ class TestMotionDetector:
         
         res = detector.process_pair(frame1, frame2)
         assert np.max(res.magnitude_map) < detector.config.motion_threshold, "Static brightness should produce negligible directional motion"
+
+class TestConfig:
+    """Test configuration validation and preset overrides."""
+
+    def test_invalid_tile_size_raises(self):
+        from neurosight.detector import NeuroSightConfig
+        with pytest.raises(ValueError, match="tile_size"):
+            NeuroSightConfig(tile_size=0)
+
+    def test_invalid_input_color_raises(self):
+        from neurosight.detector import NeuroSightConfig
+        with pytest.raises(ValueError, match="input_color"):
+            NeuroSightConfig(input_color="cmyk")
+
+    def test_invalid_scales_raises(self):
+        from neurosight.detector import NeuroSightConfig
+        with pytest.raises(ValueError, match="scales"):
+            NeuroSightConfig(scales=())
+
+    def test_invalid_adaptation_rate_raises(self):
+        from neurosight.detector import NeuroSightConfig
+        with pytest.raises(ValueError, match="adaptation_rate"):
+            NeuroSightConfig(adaptation_rate=1.5)
+
+    def test_preset_allows_overrides(self):
+        """Preset keyword overrides must not collide with preset defaults."""
+        from neurosight.detector import NeuroSightConfig
+        cfg = NeuroSightConfig.preset_robust(tile_size=16, temporal_denoising=False)
+        assert cfg.tile_size == 16
+        assert cfg.temporal_denoising is False
+        assert cfg.blur_handling is True  # untouched preset default
+
 
 class TestFrameBuffer:
     """Test frame buffering logic."""

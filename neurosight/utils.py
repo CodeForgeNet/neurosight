@@ -3,14 +3,15 @@ Phase 3: Frame Pipeline & Utilities
 Frame buffering, video I/O, normalization, performance metrics.
 """
 
-from typing import Optional, Tuple, Iterator, Any
+import logging
+import time
 import typing
 from collections import deque
 from dataclasses import dataclass
-import numpy as np
+from typing import Any, Iterator, Optional, Tuple
+
 import cv2
-import logging
-import time
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +243,7 @@ class PerformanceMonitor:
         """Get average frame processing latency in milliseconds."""
         if len(self.frame_times) == 0:
             return 0.0
-        return np.mean(list(self.frame_times)) * 1000.0
+        return float(np.mean(list(self.frame_times)) * 1000.0)
 
     def report(self) -> str:
         """Generate performance report."""
@@ -282,7 +283,7 @@ class SaliencyMapVisualizer:
         colored = cv2.applyColorMap(saliency_8bit, colormap)
         
         # Convert BGR to RGB
-        return cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+        return typing.cast(np.ndarray, cv2.cvtColor(colored, cv2.COLOR_BGR2RGB))
 
     @staticmethod
     def overlay_vectors(
@@ -313,7 +314,7 @@ class SaliencyMapVisualizer:
             'right': (arrow_scale * tile_size / 3, 0)
         }
         
-        for tile_key, data in motion_vectors.items():
+        for data in motion_vectors.values():
             direction = data['direction']
             confidence = data['confidence']
             y, x = data['y'], data['x']
@@ -362,7 +363,7 @@ class OutputWriter:
         self.output_path = output_path
         self.fps = fps
         self.frame_size = frame_size
-        self.writer = None
+        self.writer: Optional[Any] = None
 
     def write_frame(self, frame: np.ndarray):
         """

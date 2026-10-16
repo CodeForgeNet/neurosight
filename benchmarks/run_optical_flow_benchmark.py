@@ -1,9 +1,10 @@
-import numpy as np
-import cv2
-import time
-import sys
 import os
+import sys
+import time
 from collections import Counter
+
+import cv2
+import numpy as np
 
 # Add parent directory to path to import neurosight
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))

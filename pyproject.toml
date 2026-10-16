@@ -37,6 +37,7 @@ dev = [
     "pytest-cov>=4.0",
     "black>=23.0",
     "flake8>=6.0",
+    "ruff>=0.4",
     "mypy>=1.0",
 ]
 gui = [
@@ -58,12 +59,31 @@ Repository = "https://github.com/CodeForgeNet/neurosight"
 packages = ["neurosight"]
 
 [tool.setuptools.package-data]
-"*" = ["connectome_weights.json"]
+"*" = ["connectome_weights.json", "py.typed"]
 
 [tool.pytest.ini_options]
-testpaths = ["."]
+testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-v"
+
+[tool.coverage.run]
+source = ["neurosight"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
 
 [tool.black]
 line-length = 100

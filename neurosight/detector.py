@@ -4,13 +4,14 @@ Implements Hassenstein-Reichardt correlator using fly optic lobe weights.
 L1/L2 → medulla → T4/T5 direction-selective neurons.
 """
 
-from dataclasses import dataclass, field
-from typing import Tuple, Optional, Dict, List, Any
-import typing
 import json
-import numpy as np
-import cv2
 import logging
+import typing
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +45,33 @@ class NeuroSightConfig:
     enable_steering: bool = True
     include_pathway_maps: bool = True
 
+    def __post_init__(self):
+        """Validate configuration values eagerly with clear messages."""
+        if not isinstance(self.tile_size, int) or self.tile_size <= 0:
+            raise ValueError(f"tile_size must be a positive integer, got {self.tile_size!r}")
+        if not self.scales or any(
+            not isinstance(s, int) or s <= 0 for s in self.scales
+        ):
+            raise ValueError(f"scales must be a non-empty tuple of positive ints, got {self.scales!r}")
+        if self.motion_threshold < 0:
+            raise ValueError(f"motion_threshold must be >= 0, got {self.motion_threshold!r}")
+        if self.confidence_scale <= 0:
+            raise ValueError(f"confidence_scale must be > 0, got {self.confidence_scale!r}")
+        if self.tau_lowpass <= 0:
+            raise ValueError(f"tau_lowpass must be > 0, got {self.tau_lowpass!r}")
+        if self.default_dt <= 0:
+            raise ValueError(f"default_dt must be > 0, got {self.default_dt!r}")
+        if self.input_color not in ("rgb", "bgr"):
+            raise ValueError(f"input_color must be 'rgb' or 'bgr', got {self.input_color!r}")
+        if not 0.0 <= self.adaptation_rate <= 1.0:
+            raise ValueError(f"adaptation_rate must be within [0, 1], got {self.adaptation_rate!r}")
+        if not 0.0 <= self.denoising_alpha <= 1.0:
+            raise ValueError(f"denoising_alpha must be within [0, 1], got {self.denoising_alpha!r}")
+
     @classmethod
     def preset_education(cls, **kwargs):
         """Slower, highly explainable settings with default robustness disabled."""
-        return cls(
+        defaults = dict(
             temporal_denoising=False,
             flicker_suppression=False,
             ego_motion_compensation=False,
@@ -55,45 +79,49 @@ class NeuroSightConfig:
             enable_regions=False,
             enable_looming=False,
             enable_steering=False,
-            **kwargs
         )
+        defaults.update(kwargs)
+        return cls(**defaults)
 
     @classmethod
     def preset_edge_fast(cls, **kwargs):
         """Minimal latency settings optimized for Raspberry Pi, turning off some heavy robotics processing."""
-        return cls(
+        defaults = dict(
             scales=(1,),
             blur_handling=False,
             temporal_denoising=False,
             ego_motion_compensation=False,
             enable_looming=False,
             include_pathway_maps=False,
-            **kwargs
         )
+        defaults.update(kwargs)
+        return cls(**defaults)
 
     @classmethod
     def preset_robust(cls, **kwargs):
         """High noise suppression for complex lighting or bumpy movement."""
-        return cls(
+        defaults = dict(
             temporal_denoising=True,
             denoising_alpha=0.3,
             flicker_suppression=True,
             ego_motion_compensation=True,
             blur_handling=True,
-            **kwargs
         )
+        defaults.update(kwargs)
+        return cls(**defaults)
 
     @classmethod
     def preset_looming(cls, **kwargs):
         """Settings optimized for collision warning detection."""
-        return cls(
+        defaults = dict(
             ego_motion_compensation=True,
             enable_looming=True,
             enable_steering=True,
             enable_regions=True,
             scales=(1, 2, 4),
-            **kwargs
         )
+        defaults.update(kwargs)
+        return cls(**defaults)
 
 @dataclass
 class MotionResult:
@@ -213,7 +241,6 @@ class MotionDetector:
         self.connectome_weights = self._load_weights(connectome_weights_path)
         self.inputs_order = self.connectome_weights.get('inputs_order', ["Mi1", "Mi4", "Mi9", "Tm1", "Tm2", "Tm3", "Tm4", "Tm9"])
         self.weights = self.connectome_weights.get('weights', self.connectome_weights)
-        self._tile_counts_cache: Dict[Tuple[int, int], np.ndarray] = {}
         self._shift_mask_cache: Dict[Tuple[int, int, int, int], np.ndarray] = {}
         self._pathway_scale_cache: Dict[str, Tuple[float, float]] = {}
         
@@ -301,144 +328,6 @@ class MotionDetector:
     def _rectify_off(self, contrast: np.ndarray) -> np.ndarray:
         # Responds to negative contrast (dark edges), passed in as positive absolute contrast
         return (contrast / (self.sigmoid_threshold + contrast + 1e-6)) * self.sigmoid_gain
-
-    def _correlate_direction(
-        self,
-        on_prev: np.ndarray,
-        on_curr: np.ndarray,
-        off_prev: np.ndarray,
-        off_curr: np.ndarray,
-        direction: str
-    ) -> Tuple[float, float]:
-        """
-        Hassenstein-Reichardt correlator: compute motion energy in one direction.
-        
-        Core equation: motion = delayed_signal_1 * current_signal_2
-        Direction emerges from spatial offset + temporal delay.
-        
-        Args:
-            on_prev, on_curr: ON pathway (L1) previous/current frame
-            off_prev, off_curr: OFF pathway (L2) previous/current frame
-            direction: 'up', 'down', 'left', 'right'
-        
-        Returns:
-            (motion_magnitude, direction_confidence)
-        """
-        dy, dx = self.DIRECTION_OFFSETS[direction]
-        
-        # Spatial shift: "leading" pixel (where motion comes from).
-        # Zero-padded shifting avoids artificial wraparound motion at tile edges.
-        on_shifted = self._shift_no_wrap(on_curr, dy, dx)
-        off_shifted = self._shift_no_wrap(off_curr, dy, dx)
-        
-        # Temporal correlation: delayed ON × current ON, delayed OFF × current OFF
-        # (Fly brain uses neural delay lines; we approximate with frame difference)
-        on_motion = on_prev * on_shifted  # Correlation arm 1
-        off_motion = off_prev * off_shifted  # Correlation arm 2
-        
-        # T4 prefers ON (light flicker), T5 prefers OFF (dark flicker)
-        t4_response = on_motion.mean()
-        t5_response = off_motion.mean()
-        
-        # Get biological subtypes (a, b, c, d)
-        subtype = self.DIRECTION_SUBTYPES.get(direction, 'a')
-        
-        t4_key = f"t4_{subtype}"
-        t5_key = f"t5_{subtype}"
-        
-        if (
-            t4_key in self.connectome_weights
-            and t5_key in self.connectome_weights
-            and len(self.connectome_weights[t4_key]) >= 8
-            and len(self.connectome_weights[t5_key]) >= 8
-        ):
-            t4_weights = self.connectome_weights[t4_key]
-            t5_weights = self.connectome_weights[t5_key]
-            
-            # Sum of primary ON-pathway medulla weights (Mi1, Mi4, Mi9, Tm3)
-            # which are indices 0, 1, 2, 5 in our JSON array
-            t4_scale = t4_weights[0] + t4_weights[1] + t4_weights[2] + t4_weights[5]
-            
-            # Sum of primary OFF-pathway medulla weights (Tm1, Tm2, Tm4, Tm9)
-            # which are indices 3, 4, 6, 7 in our JSON array
-            t5_scale = t5_weights[3] + t5_weights[4] + t5_weights[6] + t5_weights[7]
-            
-            # Combine pathways using biological scale
-            total_scale = t4_scale + t5_scale + 1e-6
-            motion_magnitude = (t4_response * t4_scale + t5_response * t5_scale) / total_scale
-        else:
-            motion_magnitude = (t4_response + t5_response) / 2.0
-        
-        # Confidence: how coherent is the response across the patch?
-        # High spatial variability lowers confidence without discarding signal strength.
-        response_mean = t4_response + t5_response
-        response_variability = on_motion.std() + off_motion.std()
-        consistency = response_mean / (response_mean + response_variability + 1e-6)
-        confidence = np.clip(consistency, 0, 1)
-        
-        return float(motion_magnitude), float(confidence)
-
-    def detect_tile_motion(
-        self,
-        frame_prev: np.ndarray,
-        frame_curr: np.ndarray,
-        tile_y: int,
-        tile_x: int
-    ) -> Tuple[Optional[str], float]:
-        """
-        Detect motion direction in a single tile.
-        
-        Args:
-            frame_prev, frame_curr: Grayscale frames (H, W)
-            tile_y, tile_x: Tile top-left corner
-        
-        Returns:
-            (best_direction, confidence)
-            e.g., ('right', 0.87)
-        """
-        y_end = min(tile_y + self.tile_size, frame_curr.shape[0])
-        x_end = min(tile_x + self.tile_size, frame_curr.shape[1])
-        
-        # Extract tile
-        on_prev = self._rectify_on(frame_prev[tile_y:y_end, tile_x:x_end])
-        on_curr = self._rectify_on(frame_curr[tile_y:y_end, tile_x:x_end])
-        off_prev = self._rectify_off(frame_prev[tile_y:y_end, tile_x:x_end])
-        off_curr = self._rectify_off(frame_curr[tile_y:y_end, tile_x:x_end])
-        
-        # Compute motion energy in all 4 directions
-        motion_scores = {}
-        for direction in self.DIRECTIONS:
-            magnitude, confidence = self._correlate_direction(
-                on_prev, on_curr, off_prev, off_curr, direction
-            )
-            motion_scores[direction] = (magnitude, confidence)
-        
-        # True motion requires opponent subtraction (e.g. Right - Left)
-        # This matches how Lobula Plate Tangential Cells (LPTCs) integrate T4/T5 signals
-        net_y = motion_scores['down'][0] - motion_scores['up'][0]
-        net_x = motion_scores['right'][0] - motion_scores['left'][0]
-        
-        if abs(net_y) > abs(net_x):
-            best_direction = 'down' if net_y > 0 else 'up'
-            best_magnitude = abs(net_y)
-            best_consistency = motion_scores[best_direction][1]
-        else:
-            best_direction = 'right' if net_x > 0 else 'left'
-            best_magnitude = abs(net_x)
-            best_consistency = motion_scores[best_direction][1]
-        
-        # No motion detected if net magnitude is near zero
-        if best_magnitude < self.config.motion_threshold:
-            return None, 0.0
-        
-        # Confidence combines opponent motion strength with local response coherence.
-        # The saturating strength term keeps weak-but-coherent motion visible while
-        # still bounding very strong signals.
-        normalized_strength = best_magnitude / (best_magnitude + self.config.confidence_scale)
-        best_confidence = np.clip(normalized_strength * best_consistency, 0, 1)
-        
-        return best_direction, float(best_confidence)
-
 
     def reset(self):
         """Reset temporal state for a new video or sequence."""
@@ -825,10 +714,10 @@ class MotionDetector:
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """Compute multi-scale best direction and confidence for every tile in vectorized batches."""
         
-        all_magnitudes = {direction: [] for direction in self.DIRECTIONS}
-        all_consistencies = {direction: [] for direction in self.DIRECTIONS}
-        all_t4 = {direction: [] for direction in self.DIRECTIONS}
-        all_t5 = {direction: [] for direction in self.DIRECTIONS}
+        all_magnitudes: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
+        all_consistencies: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
+        all_t4: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
+        all_t5: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
         
         for scale in self.config.scales:
             for direction in self.DIRECTIONS:
@@ -954,8 +843,8 @@ class MotionDetector:
 
         if t4_weights_list is not None and t5_weights_list is not None:
             if len(t4_weights_list) == len(self.inputs_order) and len(t5_weights_list) == len(self.inputs_order):
-                t4_w = dict(zip(self.inputs_order, t4_weights_list))
-                t5_w = dict(zip(self.inputs_order, t5_weights_list))
+                t4_w = dict(zip(self.inputs_order, t4_weights_list, strict=False))
+                t5_w = dict(zip(self.inputs_order, t5_weights_list, strict=False))
                 
                 t4_scale = t4_w.get('Mi1', 0) + t4_w.get('Mi4', 0) + t4_w.get('Mi9', 0) + t4_w.get('Tm3', 0)
                 t5_scale = t5_w.get('Tm1', 0) + t5_w.get('Tm2', 0) + t5_w.get('Tm4', 0) + t5_w.get('Tm9', 0)
@@ -996,21 +885,6 @@ class MotionDetector:
         variances = np.maximum(sq_means - means * means, 0.0)
         return means.astype(np.float32), np.sqrt(variances).astype(np.float32)
 
-    def _tile_pixel_counts(self, height: int, width: int) -> np.ndarray:
-        """Return actual pixel counts for full and partial edge tiles."""
-        cache_key = (height, width)
-        if cache_key in self._tile_counts_cache:
-            return self._tile_counts_cache[cache_key]
-
-        tile_size = self.tile_size
-        y_starts = np.arange(0, height, tile_size)
-        x_starts = np.arange(0, width, tile_size)
-        y_counts = np.minimum(tile_size, height - y_starts).astype(np.float32)
-        x_counts = np.minimum(tile_size, width - x_starts).astype(np.float32)
-        counts = y_counts[:, None] * x_counts[None, :]
-        self._tile_counts_cache[cache_key] = counts
-        return counts
-
     def _same_tile_shift_mask(
         self,
         shape: Tuple[int, int],
@@ -1027,7 +901,7 @@ class MotionDetector:
         x_tiles = (np.arange(width) // self.tile_size)[None, :]
         tile_ids = (y_tiles * ((width + self.tile_size - 1) // self.tile_size) + x_tiles + 1)
         shifted_tile_ids = self._shift_no_wrap(tile_ids.astype(np.int32), dy, dx)
-        mask = (shifted_tile_ids == tile_ids).astype(np.float32)
+        mask: np.ndarray = (shifted_tile_ids == tile_ids).astype(np.float32)
         self._shift_mask_cache[cache_key] = mask
         return mask
 
@@ -1056,29 +930,6 @@ class MotionDetector:
         motion_field[..., 0] = self._expand_tile_grid(tile_dx, height, width)
         motion_field[..., 1] = self._expand_tile_grid(tile_dy, height, width)
         return motion_field
-
-    def _build_motion_vectors(
-        self,
-        tile_direction: np.ndarray,
-        tile_confidence: np.ndarray,
-        height: int,
-        width: int
-    ) -> Dict[str, Dict[str, Any]]:
-        """Build the legacy per-tile vector dictionary from vectorized tile grids."""
-        labels = ['up', 'down', 'left', 'right']
-        vectors = {}
-        tiles_h, tiles_w = tile_direction.shape
-        for tile_y in range(tiles_h):
-            for tile_x in range(tiles_w):
-                direction_index = int(tile_direction[tile_y, tile_x])
-                direction = labels[direction_index] if direction_index >= 0 else None
-                vectors[f"({tile_y}, {tile_x})"] = {
-                    'direction': direction,
-                    'confidence': float(tile_confidence[tile_y, tile_x]),
-                    'y': min(tile_y * self.tile_size, height),
-                    'x': min(tile_x * self.tile_size, width),
-                }
-        return vectors
 
     def _prepare_frame_pair(
         self,
@@ -1231,7 +1082,7 @@ class MotionDetector:
             normalized = frame.astype(np.float32, copy=False)
             if normalized.size and float(np.nanmax(normalized)) > 1.0:
                 normalized = normalized / 255.0
-        return np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False)
+        return typing.cast(np.ndarray, np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False))
 
     @staticmethod
     def _shift_no_wrap(frame: np.ndarray, dy: int, dx: int) -> np.ndarray:
@@ -1264,34 +1115,6 @@ class MotionDetector:
 
         shifted[dst_y0:dst_y1, dst_x0:dst_x1] = frame[src_y0:src_y1, src_x0:src_x1]
         return shifted
-
-    @staticmethod
-    def _direction_to_unit_vector(direction: str) -> Tuple[float, float]:
-        vectors = {
-            'up': (0.0, -1.0),
-            'down': (0.0, 1.0),
-            'left': (-1.0, 0.0),
-            'right': (1.0, 0.0),
-        }
-        return vectors[direction]
-
-    def _upsample_saliency(self, motion_map: np.ndarray, target_shape: Tuple[int, int]) -> np.ndarray:
-        """
-        Return a frame-resolution saliency map.
-        
-        Args:
-            motion_map: Motion map already painted at frame resolution
-            target_shape: Original frame shape (H, W)
-        
-        Returns:
-            Saliency map (H, W)
-        """
-        if motion_map.shape != target_shape:
-            raise ValueError(
-                f"motion_map shape must match target_shape: {motion_map.shape} != {target_shape}"
-            )
-        
-        return np.clip(motion_map, 0, 1).astype(np.float32, copy=False)
 
 
 if __name__ == "__main__":

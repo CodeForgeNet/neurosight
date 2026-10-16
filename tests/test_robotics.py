@@ -1,6 +1,7 @@
-import pytest
 import numpy as np
+
 from neurosight.detector import MotionDetector, NeuroSightConfig
+
 
 def test_extract_regions():
     config = NeuroSightConfig(tile_size=8, enable_regions=True)
