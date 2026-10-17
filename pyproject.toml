@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=65.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "neurosight"
 version = "0.1.2"
 description = "Motion detection library using fly optic lobe architecture (VFB connectome). Lightweight, CPU-friendly, biologically grounded."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     {name = "CodeForgeNet"}
 ]
@@ -17,7 +18,6 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -56,10 +56,11 @@ Repository = "https://github.com/CodeForgeNet/neurosight"
 "Bug Tracker" = "https://github.com/CodeForgeNet/neurosight/issues"
 
 [tool.setuptools]
-packages = ["neurosight"]
+packages = ["neurosight", "neurosight.data"]
 
 [tool.setuptools.package-data]
-"*" = ["connectome_weights.json", "py.typed"]
+"neurosight" = ["py.typed"]
+"neurosight.data" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
