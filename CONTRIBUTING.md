@@ -13,7 +13,13 @@ pip install -e ".[dev]"
 ```
 
 Interactive examples (webcam / `cv2.imshow`) additionally need the GUI build of
-OpenCV: `pip install -e ".[dev,gui]"`.
+OpenCV. Because the library already depends on `opencv-python-headless`, replace
+it in your development environment rather than installing both:
+
+```bash
+pip uninstall -y opencv-python-headless
+pip install "opencv-python>=4.8"
+```
 
 ## Before opening a pull request
 

@@ -12,4 +12,11 @@ PROJECT_STRUCTURE.md
 tests_output/
 outputs/
 *.mp4
+
+# macOS
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+xcuserdata/
+*.xcuserstate
