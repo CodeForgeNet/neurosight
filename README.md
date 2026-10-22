@@ -40,6 +40,19 @@ cd neurosight
 pip install -e .
 ```
 
+The core install uses `opencv-python-headless`. The interactive examples use
+`cv2.imshow`/webcam capture and therefore need a GUI-enabled OpenCV build. In a
+dedicated virtual environment, replace the headless distribution before running
+those examples:
+
+```bash
+pip uninstall -y opencv-python-headless
+pip install "opencv-python>=4.8"
+```
+
+Do not install `opencv-python` and `opencv-python-headless` side by side; both
+provide the same `cv2` module and the result depends on install order.
+
 ## How to Use It
 
 NeuroSight ships with pre-extracted biological connectome weights built directly into the library, so you can start detecting motion immediately.
@@ -53,7 +66,10 @@ from neurosight import NeuroSightDetector
 
 detector = NeuroSightDetector()
 
-saliency, motion_vectors = detector.process_video(
+# `aggregate_saliency` is the per-pixel maximum over all frames, useful for a
+# summary heatmap. Pass `return_vectors=True` if you also need the per-frame
+# tile dictionaries (they grow linearly with video length).
+aggregate_saliency, _ = detector.process_video(
     "input.mp4",
     output_video="output_with_motion.mp4",
     overlay_vectors=True
@@ -81,8 +97,13 @@ import cv2
 import time
 from neurosight.detector import MotionDetector, NeuroSightConfig
 
-# Use a preset for robust edge-device processing
-config = NeuroSightConfig.preset_robust(tile_size=8)
+# Use a preset for robust edge-device processing. Looming is opt-in because
+# it is a research heuristic, not a validated safety signal.
+config = NeuroSightConfig.preset_robust(
+    tile_size=8,
+    input_color="bgr",  # OpenCV delivers BGR frames
+    enable_looming=True,
+)
 detector = MotionDetector(config=config)
 cap = cv2.VideoCapture(0)
 
@@ -97,9 +118,12 @@ while True:
         # Display the result
         cv2.imshow("Motion Saliency", (result.saliency_map * 255).astype('uint8'))
         
-        # Check Robotics outputs
+        # Check robotics outputs (looming must be enabled in the config)
         if result.looming_score and result.looming_score > 0.05:
-            print(f"Collision imminent! TTC: {result.time_to_contact:.2f}s")
+            if result.time_to_contact is not None:
+                print(f"Expansion detected. Heuristic TTC: {result.time_to_contact:.2f}s")
+            else:
+                print("Expansion detected; time-to-contact unavailable.")
             
     if cv2.waitKey(1) == ord('q'): break
 ```
@@ -113,13 +137,13 @@ NeuroSight ships with several config presets to help you tune for your use case 
 | `preset_education()` | Visualizing basic biological principles. | Slow but highly explainable. Robotics/robustness features disabled. |
 | `preset_edge_fast()` | High-FPS operation on Raspberry Pi/Edge. | Single spatial scale. Heavy denoising and regions disabled. |
 | `preset_robust()` | Handheld cameras, noisy environments. | Heavy temporal denoising, ego-motion, and flicker suppression on. |
-| `preset_looming()` | Collision avoidance on moving robots. | Multi-scale enabled. Region extraction, looming, and steering enabled. |
+| `preset_looming()` | Expansion/TTC experiments (research, not safety-rated). | Multi-scale enabled. Region extraction, looming, and steering enabled. |
 
 You can find more detailed runnable examples in the `examples/` directory!
 
 ## What it Provides
 
-The core detector returns a strongly-typed `MotionResult` dataclass containing:
+The core detector returns a structured `MotionResult` dataclass containing:
 
 ### 1. Motion Fields & Saliency
 - `saliency_map`: A 2D NumPy array representing the intensity of motion detected (scaled from `0.0` to `1.0`).
@@ -127,9 +151,10 @@ The core detector returns a strongly-typed `MotionResult` dataclass containing:
 - `direction_maps`: A dictionary of `up`, `down`, `left`, `right` response grids.
 
 ### 2. Robotics & Navigation (Optional)
+These outputs are disabled by default. Enable them explicitly or use `preset_looming()`.
 - `regions`: A list of dictionaries representing isolated moving components (includes `bbox`, `centroid`, `area`, `dominant_vector`).
-- `looming_score`: Float representing global expansion magnitude (useful for collision).
-- `time_to_contact`: Heuristic time-to-contact estimate when looming confidence is sufficient.
+- `looming_score`: Dimensionless expansion evidence score (research heuristic).
+- `time_to_contact`: Heuristic time-to-contact estimate; not a calibrated or safety-rated signal.
 - `steering_signal`: A dictionary containing a `-1.0` to `1.0` `turn` signal (avoidance hook), `forward_caution`, and `collision_urgency`.
 
 ### 3. Legacy Dictionary
@@ -147,25 +172,54 @@ Fly-inspired motion detection is an established research area. NeuroSight packag
 ### Data provenance
 
 The bundled `t4_*`/`t5_*` weighting vectors are normalized summaries of
-*Drosophila* hemibrain (Janelia) connectivity, computed offline and shipped as
-static data (`neurosight/data/connectome_weights.json`, mirrored in
+*Drosophila* hemibrain (Janelia/NeuPrint) connectivity, computed offline and
+shipped as static data (`neurosight/data/connectome_weights.json`, mirrored in
 `neurosight/connectome_weights_data.py`). The library performs **no network
-calls at runtime**. Re-derivation from a NeuPrint token is an optional offline
-step (see `PROJECT_STRUCTURE.md`); the extraction tooling is not required to use
-the package. Users redistributing derived weights should review the upstream
-Janelia/NeuPrint data terms.
+calls at runtime**.
+
+The upstream extraction script is not included in this repository or the
+released package. The redistribution terms for these derived weights have not
+been independently reviewed here. If you plan to redistribute or use them
+commercially, verify the current Janelia/NeuPrint data terms and, if necessary,
+regenerate the weights from a source you are permitted to use.
+
+## Scientific Scope and Limitations
+
+NeuroSight is an engineering approximation inspired by insect motion vision,
+not a biophysical simulation or a certified sensor:
+
+- The correlator is a simplified Hassenstein-Reichardt-style model. The bundled
+  weights scale the ON/OFF pathway contributions; they do not reproduce the
+  full medulla/lobula plate circuit.
+- `motion_field` values are unitless motion energy, not calibrated pixel
+  displacement. Do not interpret them as metric optical flow.
+- `looming_score` and `time_to_contact` are research heuristics. They are
+  disabled by default, and `time_to_contact` is **not** a validated collision
+  warning or safety signal.
+- Directional benchmark results apply to the included synthetic stimuli. They
+  are not evidence of general real-world accuracy.
+- With the default `scales=(1, 2, 4, 8)`, the stateless `process_pair()` path
+  recovered direction at every sampled sub-tile phase from 1 to 14 px/frame on
+  the synthetic translating square and the 32 px-period grating. The stateful
+  `update()` path is limited by its temporal delay line and was reliable to
+  about 4 px/frame for small isolated objects in the same sweep. It also needs
+  two frames after `reset()` before it can report motion (the first seeds frame
+  history; the second establishes temporal contrast). Faster motion needs
+  downscaled input, a lower frame rate, or additional scales. A 32 px-period
+  grating is inherently ambiguous at 16 px/frame (half a period).
 
 ## Performance
 
-Current local smoke check using `NeuroSightConfig.preset_edge_fast(tile_size=8)` on a 640×480 synthetic frame pair:
+Current local smoke check using `NeuroSightConfig.preset_edge_fast(tile_size=8)` on a
+640×480 synthetic frame pair (single process, CPU):
 
 | Metric | NeuroSight |
 |--------|-----------:|
-| Mean latency | 15.68 ms |
-| p95 latency | 18.42 ms |
-| Mean throughput | 63.8 FPS |
+| Mean latency | 16.70 ms |
+| p95 latency | 17.11 ms |
+| Mean throughput | 59.9 FPS |
 
-These figures are a local sanity check, not a published hardware benchmark. Real performance depends on frame size, tile size, hardware, OpenCV build, enabled options, and the scene being processed.
+These figures are a local sanity check, not a published hardware benchmark. Real performance depends on frame size, tile size, hardware, OpenCV build, enabled options, and the scene being processed. The table uses the single-scale `preset_edge_fast()`; the default `scales=(1, 2, 4, 8)` configuration costs roughly 60% more CPU per frame in the same local measurement.
 
 ### Directional Synthetic Benchmark
 
@@ -175,11 +229,22 @@ NeuroSight also includes a small directional benchmark using both a translating 
 python benchmarks/run_optical_flow_benchmark.py
 ```
 
-| Metric | NeuroSight | Farneback mean-flow baseline |
-|--------|-----------:|-----------------------------:|
-| Direction accuracy | 100.0% | 50.0% |
+The script runs the original eight-case head-to-head comparison at 4 px/frame,
+then sweeps speed and sub-tile phase. These results were rerun against the
+current stateless pair-path implementation:
 
-This benchmark tests direction recovery on simple synthetic stimuli. Farneback is summarized by a masked mean dense-flow vector, which can collapse toward zero on periodic gratings with the current parameters. Treat this as a scoped synthetic benchmark, not a general claim that classical optical flow fails.
+| Condition | Result |
+|-----------|--------|
+| Cardinal directions at 4 px/frame (8 cases) | NeuroSight 100.0%, Farneback mean-flow 50.0% |
+| Translating square, 1–16 px/frame (16 cases per speed) | 16/16 correct at every speed |
+| Drifting grating (32 px period), 1–14 px/frame | 16/16 correct at every speed |
+| Drifting grating at 16 px/frame | 8/16 — half-period ambiguity, not a fixable detector error |
+
+The benchmark sweeps four phase offsets per speed so results do not depend on
+where an object falls relative to the 8 px tile grid. This is still a scoped
+synthetic benchmark, not a general claim that classical optical flow fails.
+Farneback is summarized by a masked mean dense-flow vector, which can collapse
+toward zero on periodic gratings with the current parameters.
 
 ## FAQ
 
