@@ -1,10 +1,13 @@
-import cv2
 import time
+
+import cv2
+
 from neurosight.detector import MotionDetector, NeuroSightConfig
 
+
 def main():
-    # Use the looming preset for collision warning detection
-    config = NeuroSightConfig.preset_looming(tile_size=8)
+    # Looming/TTC is a research heuristic, not a safety-rated collision warning.
+    config = NeuroSightConfig.preset_looming(tile_size=8, input_color="bgr")
     detector = MotionDetector(config=config)
     
     cap = cv2.VideoCapture(0)
@@ -31,7 +34,10 @@ def main():
         if result is not None:
             # Print looming/TTC
             if result.looming_score is not None and result.looming_score > 0.05:
-                print(f"[WARNING] Collision imminent! TTC: {result.time_to_contact:.2f} frames")
+                if result.time_to_contact is not None:
+                    print(f"[INFO] Expansion detected. Heuristic TTC: {result.time_to_contact:.2f} s")
+                else:
+                    print("[INFO] Expansion detected; time-to-contact unavailable.")
                 
             # Print Steering
             steering = result.steering_signal

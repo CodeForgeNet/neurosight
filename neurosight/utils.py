@@ -222,7 +222,7 @@ class PerformanceMonitor:
     """
 
     def __init__(self):
-        self.frame_times = deque(maxlen=30)  # Last 30 frames
+        self.frame_times: deque[float] = deque(maxlen=30)  # Last 30 frames
         self.start_time = time.time()
         self.frame_count = 0
 

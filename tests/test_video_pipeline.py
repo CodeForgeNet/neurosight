@@ -5,7 +5,7 @@ Covers:
 - output video inherits the source container frame rate
 - timestamp dt tracks the container FPS
 - VideoProcessor.probe_video metadata
-- connectome weight validation / fallback behaviour
+- connectome weight validation and missing-path errors
 """
 
 import json
@@ -55,7 +55,7 @@ def test_process_video_returns_array_and_preserves_fps(tmp_path):
 
     detector = NeuroSightDetector(tile_size=8, resize_width=None)
     saliency, vectors = detector.process_video(
-        str(video), output_video=str(output), verbose=False
+        str(video), output_video=str(output), verbose=False, return_vectors=True
     )
 
     # #1: never returns None; shape matches the source frame.
@@ -89,17 +89,34 @@ def test_load_weights_malformed_json_raises(tmp_path):
         MotionDetector(connectome_weights_path=str(bad))
 
 
-def test_load_weights_missing_file_falls_back_to_bundle():
-    # A non-existent path must fall back to the bundled weights, not crash.
-    detector = MotionDetector(connectome_weights_path="/does/not/exist.json")
-    assert detector.weights
-    assert "t4_a" in detector.weights
+def test_load_weights_missing_file_raises():
+    # An explicitly supplied path is a contract: a typo must not silently
+    # switch the model to different bundled weights.
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        MotionDetector(connectome_weights_path="/does/not/exist.json")
 
 
 def test_load_weights_rejects_non_finite(tmp_path):
     bad = tmp_path / "weights.json"
     bad.write_text(json.dumps({"weights": {"t4_a": [0.5, float("inf")]}}))
     with pytest.raises(ValueError, match="non-finite"):
+        MotionDetector(connectome_weights_path=str(bad))
+
+
+def test_load_weights_requires_all_four_directions(tmp_path):
+    bad = tmp_path / "weights.json"
+    bad.write_text(json.dumps({"weights": {"t4_a": [0.5], "t5_a": [0.5]}}))
+    with pytest.raises(ValueError, match="all four directions"):
+        MotionDetector(connectome_weights_path=str(bad))
+
+
+def test_load_weights_rejects_inconsistent_vector_lengths(tmp_path):
+    keys = [f"t4_{name}" for name in "abcd"] + [f"t5_{name}" for name in "abcd"]
+    weights = {key: [0.5] for key in keys}
+    weights["t4_a"] = [0.5, 0.5]
+    bad = tmp_path / "weights.json"
+    bad.write_text(json.dumps({"weights": weights}))
+    with pytest.raises(ValueError, match="same length"):
         MotionDetector(connectome_weights_path=str(bad))
 
 

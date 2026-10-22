@@ -8,7 +8,7 @@ direction-selective weighting derived from connectome data.
 Example:
     >>> from neurosight import NeuroSightDetector
     >>> detector = NeuroSightDetector()
-    >>> saliency, vectors = detector.process_video("input.mp4")
+    >>> aggregate_saliency, _ = detector.process_video("input.mp4")
 """
 
 import logging

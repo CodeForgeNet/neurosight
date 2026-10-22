@@ -21,7 +21,8 @@ class NeuroSightDetector:
     
     Example:
         detector = NeuroSightDetector()
-        saliency, vectors = detector.process_video("input.mp4", output_video="output.mp4")
+        aggregate_saliency, _ = detector.process_video("input.mp4", output_video="output.mp4")
+        # Pass return_vectors=True to also get per-frame tile dictionaries.
     """
 
     def __init__(
@@ -56,7 +57,8 @@ class NeuroSightDetector:
         video_path: str,
         output_video: Optional[str] = None,
         overlay_vectors: bool = False,
-        verbose: bool = True
+        verbose: bool = True,
+        return_vectors: bool = False,
     ) -> Tuple[np.ndarray, dict]:
         """
         Process entire video, detect motion in all frames.
@@ -66,13 +68,21 @@ class NeuroSightDetector:
             output_video: If provided, write annotated video to this path
             overlay_vectors: Draw motion vectors on output frames
             verbose: Print progress
+            return_vectors: Retain per-frame tile vectors in the returned dict.
+                Off by default because retention grows linearly with video length.
         
         Returns:
-            (final_saliency_map, aggregate_motion_data)
+            (aggregate_saliency_map, aggregate_motion_data)
+            ``aggregate_saliency_map`` is the per-pixel maximum over all
+            processed frames, not the last frame. ``aggregate_motion_data`` is
+            empty unless ``return_vectors=True``.
         """
         output_writer = None
-        all_motion_vectors = {}
-        final_saliency = None
+        all_motion_vectors: Dict[int, dict] = {}
+        # A new video must not inherit temporal state from the previous one.
+        self.detector.reset()
+        self.performance = PerformanceMonitor()
+        aggregate_saliency = None
         last_shape: Optional[Tuple[int, int]] = None
         output_fps = 30.0
         frame_dt = self.detector.config.default_dt
@@ -106,16 +116,20 @@ class NeuroSightDetector:
                         logger.info("Warming up initial frame...")
                     continue
                     
-                saliency, vectors = result.as_legacy()
+                saliency = result.saliency_map
+                # Building the per-tile dict is O(tiles) per frame; skip it unless used.
+                need_vectors = return_vectors or overlay_vectors
+                vectors = result.motion_vectors if need_vectors else {}
                 
                 self.performance.record_frame(latency)
                 
-                if final_saliency is None:
-                    final_saliency = saliency.copy()
+                if aggregate_saliency is None:
+                    aggregate_saliency = saliency.copy()
                 else:
-                    final_saliency = np.maximum(final_saliency, saliency)
+                    aggregate_saliency = np.maximum(aggregate_saliency, saliency)
                     
-                all_motion_vectors[frame_idx] = vectors
+                if return_vectors:
+                    all_motion_vectors[frame_idx] = vectors
                 
                 # Visualization (if requested)
                 if output_video is not None:
@@ -151,19 +165,19 @@ class NeuroSightDetector:
             if output_writer is not None:
                 output_writer.release()
             
-            if final_saliency is None:
+            if aggregate_saliency is None:
                 if last_shape is None:
                     raise IOError(f"No frames could be read from video: {video_path}")
                 logger.warning(
                     "Video produced no motion frames (fewer than 2 frames); "
                     "returning a zero saliency map."
                 )
-                final_saliency = np.zeros(last_shape, dtype=np.float32)
+                aggregate_saliency = np.zeros(last_shape, dtype=np.float32)
 
             if verbose:
                 logger.info(f"Video processing complete. {self.performance.report()}")
             
-            return final_saliency, all_motion_vectors
+            return aggregate_saliency, all_motion_vectors
         
         except Exception as e:
             logger.error(f"Error processing video: {e}")
