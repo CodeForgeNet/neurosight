@@ -26,7 +26,7 @@ class NeuroSightConfig:
     motion_threshold: float = 0.01
     confidence_scale: float = 0.05
     input_color: str = "rgb"
-    scales: Tuple[int, ...] = (1, 2)
+    scales: Tuple[int, ...] = (1, 2, 4, 8)
     tau_lowpass: float = 0.05
     default_dt: float = 0.033
     contrast_normalization: bool = True
@@ -41,10 +41,13 @@ class NeuroSightConfig:
     ego_motion_compensation: bool = True
     blur_handling: bool = False
     
-    # Robotics outputs
-    enable_regions: bool = True
-    enable_looming: bool = True
-    enable_steering: bool = True
+    # Robotics outputs. Disabled by default: looming/TTC and steering are
+    # research-grade heuristics, not validated safety systems. Enable them
+    # explicitly (or use ``preset_looming``) when you have validated the
+    # behaviour for your scene and sensor.
+    enable_regions: bool = False
+    enable_looming: bool = False
+    enable_steering: bool = False
     include_pathway_maps: bool = True
 
     def __post_init__(self):
@@ -71,9 +74,9 @@ class NeuroSightConfig:
             raise ValueError(f"denoising_alpha must be within [0, 1], got {self.denoising_alpha!r}")
 
     @classmethod
-    def preset_education(cls, **kwargs):
+    def preset_education(cls, **kwargs: Any) -> "NeuroSightConfig":
         """Slower, highly explainable settings with default robustness disabled."""
-        defaults = dict(
+        defaults: Dict[str, Any] = dict(
             temporal_denoising=False,
             flicker_suppression=False,
             ego_motion_compensation=False,
@@ -86,23 +89,25 @@ class NeuroSightConfig:
         return cls(**defaults)
 
     @classmethod
-    def preset_edge_fast(cls, **kwargs):
+    def preset_edge_fast(cls, **kwargs: Any) -> "NeuroSightConfig":
         """Minimal latency settings optimized for Raspberry Pi, turning off some heavy robotics processing."""
-        defaults = dict(
+        defaults: Dict[str, Any] = dict(
             scales=(1,),
             blur_handling=False,
             temporal_denoising=False,
             ego_motion_compensation=False,
             enable_looming=False,
+            enable_regions=False,
+            enable_steering=False,
             include_pathway_maps=False,
         )
         defaults.update(kwargs)
         return cls(**defaults)
 
     @classmethod
-    def preset_robust(cls, **kwargs):
+    def preset_robust(cls, **kwargs: Any) -> "NeuroSightConfig":
         """High noise suppression for complex lighting or bumpy movement."""
-        defaults = dict(
+        defaults: Dict[str, Any] = dict(
             temporal_denoising=True,
             denoising_alpha=0.3,
             flicker_suppression=True,
@@ -113,25 +118,30 @@ class NeuroSightConfig:
         return cls(**defaults)
 
     @classmethod
-    def preset_looming(cls, **kwargs):
-        """Settings optimized for collision warning detection."""
-        defaults = dict(
+    def preset_looming(cls, **kwargs: Any) -> "NeuroSightConfig":
+        """Settings for expansion/TTC experiments (research, not safety-rated)."""
+        defaults: Dict[str, Any] = dict(
             ego_motion_compensation=True,
             enable_looming=True,
             enable_steering=True,
             enable_regions=True,
-            scales=(1, 2, 4),
+            scales=(1, 2, 4, 8),
         )
         defaults.update(kwargs)
         return cls(**defaults)
 
-@dataclass
+@dataclass(eq=False)
 class MotionResult:
     """Structured result returned by the newer motion API.
 
     The frame-resolution direction and pathway maps are expanded lazily from
     their tile-resolution grids, so constructing a result is cheap and those
     arrays are only allocated when a caller actually reads them.
+
+    Some arrays are aliases to avoid full-frame copies: ``confidence_map`` is
+    the same array as ``saliency_map``, and ``ego_compensated_field`` aliases
+    ``motion_field`` when ego-motion compensation is disabled. Treat all
+    result arrays as read-only.
     """
 
     saliency_map: np.ndarray
@@ -285,9 +295,15 @@ class MotionDetector:
     DEFAULT_SIGMOID_GAIN = 2.0       # Steepness of intensity response
     DEFAULT_SIGMOID_THRESHOLD = 0.5  # Half-saturation point (normalized intensity)
 
-    # Maximum number of cached per-shape shift masks (bounds memory when the
-    # input resolution varies over the lifetime of a detector).
+    # Bounds for cached per-shape shift masks. Boolean masks are cheap, but a
+    # 4K frame still costs ~8 MB per scale/direction, so cap total bytes too.
     SHIFT_MASK_CACHE_SIZE = 64
+    SHIFT_MASK_CACHE_BYTES = 32 * 1024 * 1024
+
+    # Stateless pair path: per-tile temporal change needed before correlation
+    # output is trusted, and the half-saturation scale for the soft gate.
+    PAIR_ACTIVITY_FLOOR = 1e-3
+    PAIR_ACTIVITY_SCALE = 2e-2
 
     def __init__(
         self,
@@ -311,13 +327,14 @@ class MotionDetector:
         self.inputs_order = self.connectome_weights.get('inputs_order', ["Mi1", "Mi4", "Mi9", "Tm1", "Tm2", "Tm3", "Tm4", "Tm9"])
         self.weights = self.connectome_weights.get('weights', self.connectome_weights)
         self._shift_mask_cache: "OrderedDict[Tuple[int, int, int, int], np.ndarray]" = OrderedDict()
+        self._shift_mask_cache_bytes = 0
         self._pathway_scale_cache: Dict[str, Tuple[float, float]] = {}
         
         self.sigmoid_gain = self.DEFAULT_SIGMOID_GAIN
         self.sigmoid_threshold = self.DEFAULT_SIGMOID_THRESHOLD
         
         self.reset()
-        logger.info(f"MotionDetector initialized (tile_size={tile_size})")
+        logger.info("MotionDetector initialized (tile_size=%s)", self.tile_size)
 
     def _fallback_weights(self) -> dict:
         """Load the weights that ship inside the package."""
@@ -330,11 +347,19 @@ class MotionDetector:
                 "Reinstall the package or pass a valid connectome_weights_path."
             ) from exc
         logger.info("Loaded connectome weights from bundled python module")
-        return WEIGHTS
+        return self._validate_weights(WEIGHTS, "bundled weights")
 
     @classmethod
     def _validate_weights(cls, data: Any, source: str) -> dict:
-        """Validate the structure of a connectome weights payload."""
+        """Validate the structure and schema of a connectome weights payload.
+
+        A valid payload must define either the four subtype vectors
+        (``t4_a``..``t4_d`` / ``t5_a``..``t5_d``) or the four direction-named
+        vectors (``t4_up``..).  When ``inputs_order`` is present every vector
+        must match its length; without it, all vectors must still agree on a
+        single length so that ``_pathway_scales`` cannot silently fall back to
+        uniform gains.
+        """
         if not isinstance(data, dict):
             raise ValueError(
                 f"Connectome weights from {source} must be a JSON object, "
@@ -347,6 +372,24 @@ class MotionDetector:
                 f"Connectome weights from {source} contain no 'weights' mapping."
             )
 
+        inputs_order = data.get('inputs_order')
+        expected_length: Optional[int] = None
+        if inputs_order is not None:
+            if (
+                not isinstance(inputs_order, (list, tuple))
+                or not inputs_order
+                or any(not isinstance(name, str) or not name for name in inputs_order)
+            ):
+                raise ValueError(
+                    f"'inputs_order' from {source} must be a non-empty list of names."
+                )
+            if len(set(inputs_order)) != len(inputs_order):
+                raise ValueError(
+                    f"'inputs_order' from {source} contains duplicate names."
+                )
+            expected_length = len(inputs_order)
+
+        lengths: set[int] = set()
         for key, values in weights.items():
             if key == 'inputs_order':
                 continue
@@ -363,21 +406,51 @@ class MotionDetector:
                 raise ValueError(
                     f"Connectome weight '{key}' from {source} contains non-finite values."
                 )
+            lengths.add(int(arr.size))
+
+        subtype_keys = {f"t4_{name}" for name in "abcd"} | {
+            f"t5_{name}" for name in "abcd"
+        }
+        direction_keys = {
+            f"t4_{name}" for name in ("up", "down", "left", "right")
+        } | {f"t5_{name}" for name in ("up", "down", "left", "right")}
+        present = set(weights)
+        if not subtype_keys <= present and not direction_keys <= present:
+            missing = sorted((subtype_keys if not subtype_keys <= present else direction_keys) - present)
+            raise ValueError(
+                f"Connectome weights from {source} must define t4/t5 vectors for "
+                f"all four directions (subtypes a-d or up/down/left/right); "
+                f"missing {', '.join(missing)}."
+            )
+
+        if expected_length is not None and lengths != {expected_length}:
+            raise ValueError(
+                f"Connectome weights from {source} must all have length "
+                f"{expected_length} to match 'inputs_order'; got lengths {sorted(lengths)}."
+            )
+        if expected_length is None and len(lengths) != 1:
+            raise ValueError(
+                f"Connectome weights from {source} must all have the same length; "
+                f"got lengths {sorted(lengths)}."
+            )
+
         return data
 
     def _load_weights(self, filepath: Optional[str]) -> dict:
-        """Load and validate connectome weights, falling back to bundled data."""
+        """Load and validate weights; use the bundled data when no path is given."""
         if not filepath:
             return self._fallback_weights()
 
         try:
             with open(filepath, 'r') as f:
                 data = json.load(f)
-        except FileNotFoundError:
-            logger.info(
-                "Connectome weights not found at %s; using bundled fallback.", filepath
-            )
-            return self._fallback_weights()
+        except FileNotFoundError as exc:
+            # An explicitly supplied path is a user contract. Silently falling
+            # back to different weights hides typos and changes model output.
+            raise FileNotFoundError(
+                f"Connectome weights file '{filepath}' does not exist. "
+                "Pass None (or omit the argument) to use the bundled weights."
+            ) from exc
         except json.JSONDecodeError as exc:
             raise ValueError(
                 f"Connectome weights file '{filepath}' is not valid JSON: {exc}"
@@ -389,6 +462,14 @@ class MotionDetector:
 
         logger.info(f"Loaded connectome weights from {filepath}")
         return self._validate_weights(data, filepath)
+
+    def _pair_rectify_on(self, intensity: np.ndarray) -> np.ndarray:
+        """ON rectifier with fixed default parameters, independent of stream state."""
+        return (intensity / (self.DEFAULT_SIGMOID_THRESHOLD + intensity + 1e-6)) * self.DEFAULT_SIGMOID_GAIN
+
+    def _pair_rectify_off(self, intensity: np.ndarray) -> np.ndarray:
+        """OFF rectifier with fixed default parameters, independent of stream state."""
+        return self._pair_rectify_on(intensity)
 
     def _rectify_on(self, contrast: np.ndarray) -> np.ndarray:
         # Responds to positive contrast (bright edges)
@@ -403,8 +484,10 @@ class MotionDetector:
         self.sigmoid_gain = self.DEFAULT_SIGMOID_GAIN
         self.sigmoid_threshold = self.DEFAULT_SIGMOID_THRESHOLD
         self._last_frame: Optional[np.ndarray] = None
-        self._on_lowpass: Optional[np.ndarray] = None
-        self._off_lowpass: Optional[np.ndarray] = None
+        # Temporal-contrast delay line. Correlating contrast (rather than raw
+        # intensity) removes static structure, so a still scene contributes no
+        # motion energy even when the correlator is evaluated at nonzero shifts.
+        self._contrast_lowpass: Optional[np.ndarray] = None
         self._last_timestamp: Optional[float] = None
         self._last_frame_shape: Optional[Tuple[int, int]] = None
         
@@ -419,16 +502,44 @@ class MotionDetector:
     ) -> Optional[MotionResult]:
         """
         Process a new frame and update state, returning a MotionResult.
-        If this is the first frame or resolution changes, state resets and returns None.
+
+        The first frame seeds the temporal-contrast delay line and returns
+        ``None``. Subsequent calls correlate the delayed contrast (temporal
+        derivative, low-passed with ``tau_lowpass``) against the current
+        contrast at the configured spatial scales. A static scene therefore
+        produces no motion energy, independent of spatial structure.
+
+        If the resolution changes, state resets and the first frame of the new
+        resolution returns ``None``.
         """
         if frame_curr is None:
             raise ValueError("frame_curr must be a numpy array")
-            
+
         curr = np.asarray(frame_curr)
+        if curr.ndim not in (2, 3) or curr.size == 0:
+            raise ValueError(
+                f"frame_curr must be a non-empty 2D or 3D array, got shape {curr.shape}"
+            )
+        if not np.all(np.isfinite(curr)):
+            # A NaN here would propagate into the adaptive threshold and disable
+            # detection until reset(), so reject it before any state is touched.
+            raise ValueError("frame_curr contains NaN or Inf values")
         if curr.ndim == 3:
             curr = self._to_grayscale(curr)
-        
+
         curr = self._normalize_frame(curr)
+
+        H, W = curr.shape[:2]
+
+        # Check the resolution before touching temporal-denoising state. A
+        # size change invalidates the running average, and blending frames of
+        # different shapes would raise instead of resetting cleanly.
+        if self._last_frame_shape is not None and self._last_frame_shape != (H, W):
+            logger.info("Resolution changed, resetting temporal state.")
+            self.reset()
+
+        self._last_frame_shape = (H, W)
+
         if self.config.blur_handling:
             curr = cv2.GaussianBlur(curr, (3, 3), 0).astype(np.float32)
 
@@ -437,77 +548,87 @@ class MotionDetector:
                 self._smoothed_frame = curr.copy()
             else:
                 self._smoothed_frame = (
-                    self.config.denoising_alpha * curr +
-                    (1.0 - self.config.denoising_alpha) * self._smoothed_frame
+                    self.config.denoising_alpha * curr
+                    + (1.0 - self.config.denoising_alpha) * self._smoothed_frame
                 )
             process_frame = self._smoothed_frame
         else:
             process_frame = curr
 
-        H, W = curr.shape[:2]
-        
-        if self._last_frame_shape is not None and self._last_frame_shape != (H, W):
-            logger.info("Resolution changed, resetting temporal state.")
-            self.reset()
-            
-        self._last_frame_shape = (H, W)
-        
-        if self._last_frame is None:
-            self._last_frame = process_frame.copy()
-            self._last_timestamp = timestamp
-            self._on_lowpass = np.zeros_like(process_frame)
-            self._off_lowpass = np.zeros_like(process_frame)
-            return None
-            
-        delta = curr - self._last_frame
-
-        if self.config.flicker_suppression:
-            delta = delta - float(np.median(delta))
-        
-        if self.config.contrast_normalization:
-            # Luminance gain control. Floor the denominator so near-black
-            # regions cannot produce explosive gain, then clip to a stable range.
-            denominator = np.maximum(self._last_frame, 0.05)
-            delta = np.clip(delta / denominator, -1.0, 1.0)
-            
-        if self.config.lateral_inhibition:
-            local_mean, _ = self._tile_mean_and_std(delta)
-            expanded_mean = self._expand_tile_grid(local_mean, H, W)
-            delta = delta - expanded_mean
-            
-        self._last_frame = process_frame.copy()
-        
-        on_curr = self._rectify_on(np.clip(delta, 0, 1)).astype(np.float32)
-        off_curr = self._rectify_off(np.clip(-delta, 0, 1)).astype(np.float32)
-        
-        mean_abs_contrast = float(np.mean(np.abs(delta)))
-        self.sigmoid_threshold = (
-            (1.0 - self.config.adaptation_rate) * self.sigmoid_threshold +
-            self.config.adaptation_rate * mean_abs_contrast
-        )
-        self.sigmoid_threshold = np.clip(self.sigmoid_threshold, 0.05, 0.5)
-
+        # Frame interval: prefer the caller's timestamps, then the default.
         if timestamp is not None and self._last_timestamp is not None:
             dt = timestamp - self._last_timestamp
             if dt <= 0:
                 dt = self.config.default_dt
         else:
             dt = self.config.default_dt
-            
         self._last_timestamp = timestamp
-        
+
+        if self._last_frame is None:
+            # Seed the delay line with a zero contrast frame. The first
+            # inter-frame difference is not available until the next call, and
+            # correlating the current frame with itself would be even in
+            # direction (it cannot distinguish left from right).
+            self._contrast_lowpass = np.zeros_like(process_frame, dtype=np.float32)
+            self._last_frame = process_frame.copy()
+            return None
+
+        # Compare the current frame against the previous *processed* frame.
+        # With temporal denoising enabled this is a high-pass relative to a
+        # running average, which preserves sensitivity to new motion instead of
+        # differencing two already-smoothed frames (which halves the contrast).
+        delta = curr - self._last_frame
+
+        if self.config.flicker_suppression:
+            delta = delta - float(np.median(delta))
+
+        if self.config.contrast_normalization:
+            # Luminance gain control. Floor the denominator so near-black
+            # regions cannot produce explosive gain, then clip to a stable range.
+            denominator = np.maximum(self._last_frame, 0.05)
+            delta = np.clip(delta / denominator, -1.0, 1.0)
+
+        if self.config.lateral_inhibition:
+            local_mean, _ = self._tile_mean_and_std(delta)
+            # Smooth the tile-mean estimate back to frame resolution. Nearest-
+            # neighbour expansion leaves 8-pixel seams that correlate with
+            # themselves at larger shifts and fabricate vertical/horizontal
+            # motion from an otherwise one-directional stimulus.
+            expanded_mean = self._expand_tile_grid_smooth(local_mean, H, W)
+            delta = delta - expanded_mean
+
+        self._last_frame = process_frame.copy()
+
+        mean_abs_contrast = float(np.mean(np.abs(delta)))
+        self.sigmoid_threshold = (
+            (1.0 - self.config.adaptation_rate) * self.sigmoid_threshold
+            + self.config.adaptation_rate * mean_abs_contrast
+        )
+        self.sigmoid_threshold = float(np.clip(self.sigmoid_threshold, 0.05, 0.5))
+
+        # Reichardt delay line: correlate the previous temporal contrast with
+        # the current temporal contrast. Both signals are zero in a static
+        # scene, and their spatial offset encodes the direction of motion.
+        delayed = self._contrast_lowpass
+        if delayed is None or delayed.shape != delta.shape:
+            delayed = np.zeros_like(delta, dtype=np.float32)
+
+        on_delayed = self._rectify_on(np.clip(delayed, 0.0, None)).astype(np.float32)
+        off_delayed = self._rectify_off(np.clip(-delayed, 0.0, None)).astype(np.float32)
+        on_curr = self._rectify_on(np.clip(delta, 0.0, None)).astype(np.float32)
+        off_curr = self._rectify_off(np.clip(-delta, 0.0, None)).astype(np.float32)
+
+        # Low-pass the delay-line signal. tau_lowpass controls how quickly the
+        # previous contrast is forgotten; at the default dt this is a mild
+        # smoothing that leaves one-frame displacement cues intact.
         alpha_lp = 1.0 - np.exp(-dt / max(self.config.tau_lowpass, 1e-6))
-        alpha_lp = np.clip(alpha_lp, 0.0, 1.0)
-        
-        self._on_lowpass = (1.0 - alpha_lp) * self._on_lowpass + alpha_lp * on_curr
-        self._off_lowpass = (1.0 - alpha_lp) * self._off_lowpass + alpha_lp * off_curr
-        
-        on_highpass = on_curr - self._on_lowpass
-        off_highpass = off_curr - self._off_lowpass
-        
+        alpha_lp = float(np.clip(alpha_lp, 0.0, 1.0))
+        self._contrast_lowpass = (
+            (1.0 - alpha_lp) * delayed + alpha_lp * delta
+        ).astype(np.float32)
+
         tile_direction, tile_confidence, direction_grids, t4_grids, t5_grids = self._detect_motion_grid_stateful(
-            self._on_lowpass, on_highpass,
-            self._off_lowpass, off_highpass
+            on_delayed, on_curr, off_delayed, off_curr
         )
         
         motion_field = self._build_motion_field(tile_direction, tile_confidence, H, W)
@@ -538,9 +659,8 @@ class MotionDetector:
         }
 
         ego_vector = (global_dx, global_dy)
-        ego_compensated_field = motion_field.copy()
-
         if self.config.ego_motion_compensation:
+            ego_compensated_field = motion_field.copy()
             alpha_ego = self.config.adaptation_rate
             if self._ego_motion_vector is None:
                 self._ego_motion_vector = ego_vector
@@ -549,10 +669,13 @@ class MotionDetector:
                     self._ego_motion_vector[0] * (1 - alpha_ego) + ego_vector[0] * alpha_ego,
                     self._ego_motion_vector[1] * (1 - alpha_ego) + ego_vector[1] * alpha_ego
                 )
-            
+
             ego_dx, ego_dy = self._ego_motion_vector
             ego_compensated_field[..., 0] = np.where(active, ego_compensated_field[..., 0] - ego_dx, 0.0)
             ego_compensated_field[..., 1] = np.where(active, ego_compensated_field[..., 1] - ego_dy, 0.0)
+        else:
+            # Read-only alias: avoid a full-frame copy when compensation is off.
+            ego_compensated_field = motion_field
             
         scene_quality = {
             'exposure_clip': float(np.mean((curr < 0.05) | (curr > 0.95))),
@@ -567,7 +690,9 @@ class MotionDetector:
         return MotionResult(
             saliency_map=saliency_map,
             motion_field=motion_field,
-            confidence_map=saliency_map.copy(),
+            # Saliency is the per-tile confidence painted back to frame
+            # resolution; expose the same array read-only instead of duplicating it.
+            confidence_map=saliency_map,
             magnitude_map=magnitude_map,
             angle_map=angle_map,
             global_vector=(global_dx, global_dy),
@@ -599,17 +724,23 @@ class MotionDetector:
         Process a pair of consecutive frames without mutating streaming state.
 
         Signal convention (important): this stateless path correlates the
-        *rectified raw intensity* of the previous frame against the spatially
-        shifted current frame (a two-sample Reichardt correlator). The stateful
-        :meth:`update` path instead correlates *rectified temporal contrast*
-        through an adaptive low/high-pass filter. Both are Reichardt-style
-        correlators and are expected to agree on direction, but they are not
-        numerically identical: the pair path has no temporal adaptation, delay
-        line, or warm-up, so magnitudes/confidences will differ.
+        *spatial high-pass* (local contrast) of the two frames. A two-frame
+        input has no temporal delay line, so high-pass features remove the
+        static background that would otherwise dominate. A per-tile temporal
+        change gate suppresses residual correlation on still scenes. The
+        stateful :meth:`update` path instead correlates the previous *temporal
+        contrast* against the current temporal contrast. Both paths estimate
+        direction, but their magnitudes/confidences are not numerically
+        identical: the pair path has no delay-line warm-up.
+
+        Streaming-only options are intentionally not applied here:
+        ``contrast_normalization``, ``lateral_inhibition``, and
+        ``ego_motion_compensation`` require history and are ignored by this
+        stateless path. ``flicker_suppression`` and ``blur_handling`` are
+        applied to the input pair.
 
         Use this when you have exactly two frames and want an immediate result;
-        use :meth:`update` for continuous streams where temporal adaptation
-        matters.
+        use :meth:`update` for continuous streams.
         """
         frame_prev, frame_curr = self._prepare_frame_pair(frame_prev, frame_curr)
         if self.config.blur_handling:
@@ -689,7 +820,9 @@ class MotionDetector:
             'global_contrast': float(np.std(source_frame)),
         }
 
-        ego_compensated_field = motion_field.copy()
+        # The stateless pair path has no ego-motion history, so expose a
+        # read-only alias rather than copying a full-frame field.
+        ego_compensated_field = motion_field
         regions = self._extract_regions(saliency_map, ego_compensated_field)
         looming_score, ttc = self._compute_looming_and_ttc(
             ego_compensated_field, saliency_map, dt=self.config.default_dt
@@ -699,7 +832,9 @@ class MotionDetector:
         return MotionResult(
             saliency_map=saliency_map,
             motion_field=motion_field,
-            confidence_map=saliency_map.copy(),
+            # Saliency is the per-tile confidence painted back to frame
+            # resolution; expose the same array read-only instead of duplicating it.
+            confidence_map=saliency_map,
             magnitude_map=magnitude_map,
             angle_map=angle_map,
             global_vector=(global_dx, global_dy),
@@ -728,9 +863,12 @@ class MotionDetector:
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """Compute a stateless vectorized motion grid from one frame pair.
 
-        Uses rectified raw intensity as the correlator input (see
-        :meth:`process_pair`). The stateful :meth:`update` path passes filtered
-        contrast signals to the same grid correlator instead.
+        The pair path has no temporal history, so it uses a spatial high-pass
+        (local contrast) representation instead of the streaming path's
+        temporal contrast delay line. High-pass features remove the static DC
+        component that otherwise dominates the correlator at nonzero shifts.
+        A per-tile temporal-change gate then suppresses residual response on
+        still scenes and global brightness changes.
         """
         if self.config.flicker_suppression:
             # Remove the common-mode (global) brightness change by splitting the
@@ -741,19 +879,69 @@ class MotionDetector:
                 frame_prev = np.clip(frame_prev + global_shift * 0.5, 0.0, 1.0)
                 frame_curr = np.clip(frame_curr - global_shift * 0.5, 0.0, 1.0)
 
-        on_prev = self._rectify_on(frame_prev).astype(np.float32)
-        on_curr = self._rectify_on(frame_curr).astype(np.float32)
-        off_prev = self._rectify_off(1.0 - frame_prev).astype(np.float32)
-        off_curr = self._rectify_off(1.0 - frame_curr).astype(np.float32)
+        change = (frame_curr - frame_prev).astype(np.float32)
 
-        return self._detect_motion_grid_stateful(on_prev, on_curr, off_prev, off_curr)
+        # A local contrast operator scaled to the tile size keeps edges and
+        # polarity while discarding the unchanging background. Use the tile
+        # size itself rather than half of it so broad, slowly varying patterns
+        # (periods up to ~64 px at the default tile size) survive the high-pass
+        # instead of vanishing before correlation.
+        sigma = float(np.clip(self.tile_size, 1.0, 12.0))
+        prev_hp = frame_prev - cv2.GaussianBlur(frame_prev, (0, 0), sigma)
+        curr_hp = frame_curr - cv2.GaussianBlur(frame_curr, (0, 0), sigma)
+
+        on_prev = self._pair_rectify_on(np.clip(prev_hp, 0.0, None)).astype(np.float32)
+        off_prev = self._pair_rectify_off(np.clip(-prev_hp, 0.0, None)).astype(np.float32)
+        on_curr = self._pair_rectify_on(np.clip(curr_hp, 0.0, None)).astype(np.float32)
+        off_curr = self._pair_rectify_off(np.clip(-curr_hp, 0.0, None)).astype(np.float32)
+
+        tile_direction, tile_confidence, direction_grids, t4_grids, t5_grids = (
+            self._detect_motion_grid_stateful(on_prev, on_curr, off_prev, off_curr)
+        )
+
+        # Gate correlation confidence by how much the input actually changed.
+        # Without this, static texture self-correlates at every shift and can
+        # produce low-level directional output.
+        change_grid, _ = self._tile_mean_and_std(np.abs(change))
+        gate = change_grid / (change_grid + self.PAIR_ACTIVITY_SCALE)
+        gate = np.where(change_grid >= self.PAIR_ACTIVITY_FLOOR, gate, 0.0).astype(np.float32)
+
+        tile_confidence = (tile_confidence * gate).astype(np.float32)
+        tile_direction = np.where(tile_confidence > 0.0, tile_direction, -1).astype(np.int8)
+        direction_grids = {key: (grid * gate).astype(np.float32) for key, grid in direction_grids.items()}
+        t4_grids = {key: (grid * gate).astype(np.float32) for key, grid in t4_grids.items()}
+        t5_grids = {key: (grid * gate).astype(np.float32) for key, grid in t5_grids.items()}
+
+        # Rectified onset/offset transients are part of the T4/T5 channel
+        # response. Motion correlation supplies direction, while the transient
+        # term preserves ON/OFF selectivity for objects that appear or vanish
+        # without correlated displacement (the previous frame has no local
+        # contrast at that location). Distribute it across directions because
+        # a pure onset has no defined direction.
+        on_transient, _ = self._tile_mean_and_std(
+            self._pair_rectify_on(np.clip(change, 0.0, None))
+        )
+        off_transient, _ = self._tile_mean_and_std(
+            self._pair_rectify_off(np.clip(-change, 0.0, None))
+        )
+        share = 1.0 / len(self.DIRECTIONS)
+        t4_grids = {
+            key: (grid + on_transient * share).astype(np.float32)
+            for key, grid in t4_grids.items()
+        }
+        t5_grids = {
+            key: (grid + off_transient * share).astype(np.float32)
+            for key, grid in t5_grids.items()
+        }
+
+        return tile_direction, tile_confidence, direction_grids, t4_grids, t5_grids
 
     def _detect_motion_grid_stateful(
         self,
-        on_lowpass: np.ndarray,
-        on_highpass: np.ndarray,
-        off_lowpass: np.ndarray,
-        off_highpass: np.ndarray
+        on_delayed: np.ndarray,
+        on_curr: np.ndarray,
+        off_delayed: np.ndarray,
+        off_curr: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
         """Compute multi-scale best direction and confidence for every tile in vectorized batches."""
         
@@ -762,11 +950,13 @@ class MotionDetector:
         all_t4: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
         all_t5: Dict[str, List[np.ndarray]] = {direction: [] for direction in self.DIRECTIONS}
         
-        for scale in self.config.scales:
+        # Ascending order makes "first scale within 90% of the best score"
+        # mean "smallest scale", independent of how the user ordered the tuple.
+        for scale in sorted(self.config.scales):
             for direction in self.DIRECTIONS:
                 mag, cons, t4_mag, t5_mag = self._correlate_direction_grid(
-                    on_lowpass, on_highpass,
-                    off_lowpass, off_highpass,
+                    on_delayed, on_curr,
+                    off_delayed, off_curr,
                     direction,
                     scale
                 )
@@ -775,7 +965,8 @@ class MotionDetector:
                 all_t4[direction].append(t4_mag)
                 all_t5[direction].append(t5_mag)
                 
-        # Confidence-weighted fusion across scales
+        # Scale selection: keep the response of the scale that best explains
+        # each tile, rather than averaging all scales together.
         magnitudes = {}
         consistencies = {}
         t4_fused = {}
@@ -787,12 +978,25 @@ class MotionDetector:
             t4s = np.stack(all_t4[direction], axis=0)
             t5s = np.stack(all_t5[direction], axis=0)
             
-            # Weighted average of magnitudes by their confidence
-            sum_conss = np.sum(conss, axis=0) + 1e-6
-            magnitudes[direction] = np.sum(mags * conss, axis=0) / sum_conss
-            consistencies[direction] = np.max(conss, axis=0)
-            t4_fused[direction] = np.sum(t4s * conss, axis=0) / sum_conss
-            t5_fused[direction] = np.sum(t5s * conss, axis=0) / sum_conss
+            # Select the scale that best explains each tile instead of averaging
+            # all scales together. A confidence-weighted average lets a large
+            # scale with a weak, ambiguous response dilute a strong small-scale
+            # response at low speeds (and vice versa), which made the reported
+            # direction depend on sub-tile phase. The score combines response
+            # strength with reliability so a clean small-scale peak wins at low
+            # speed while a large scale wins only when the displacement needs it.
+            scores = mags * conss
+            # Prefer the smallest scale that is nearly as good as the best one.
+            # Coarse scales are only selected when they explain the displacement
+            # materially better, which keeps low-speed responses from being
+            # diluted by an ambiguous large-scale correlation.
+            best_score = np.max(scores, axis=0, keepdims=True)
+            eligible = scores >= 0.9 * best_score
+            best_scale = np.argmax(eligible, axis=0)[None, ...]
+            magnitudes[direction] = np.take_along_axis(mags, best_scale, axis=0)[0]
+            consistencies[direction] = np.take_along_axis(conss, best_scale, axis=0)[0]
+            t4_fused[direction] = np.take_along_axis(t4s, best_scale, axis=0)[0]
+            t5_fused[direction] = np.take_along_axis(t5s, best_scale, axis=0)[0]
 
         if self.config.opponent_subtraction:
             net_y = magnitudes['down'] - magnitudes['up']
@@ -849,13 +1053,23 @@ class MotionDetector:
         direction: str,
         scale: int = 1
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Compute motion magnitude and coherence for one direction over all tiles."""
+        """Correlate delayed and current signals for one direction over all tiles.
+
+        ``on_delayed``/``off_delayed`` are the delayed (or previous) rectified
+        ON/OFF signals and ``on_curr``/``off_curr`` the current ones. The
+        correlator is evaluated over every pixel whose shifted sample stays
+        inside the frame; pooling into tiles happens afterwards, so
+        displacements that match the tile size are not erased.
+        """
         dy, dx = self.DIRECTION_OFFSETS[direction]
         dy, dx = dy * scale, dx * scale
         
         on_shifted = self._shift_no_wrap(on_curr, dy, dx)
         off_shifted = self._shift_no_wrap(off_curr, dy, dx)
-        valid_shift = self._same_tile_shift_mask(on_curr.shape, dy, dx)
+        # Mask only pixels that leave the frame. Restricting the correlation to
+        # same-tile pixels creates periodic blind spots at tile-aligned
+        # displacements and makes the result depend on sub-tile phase.
+        valid_shift = self._shift_validity_mask(on_curr.shape, dy, dx)
 
         on_motion = on_delayed * on_shifted * valid_shift
         off_motion = off_delayed * off_shifted * valid_shift
@@ -928,13 +1142,19 @@ class MotionDetector:
         variances = np.maximum(sq_means - means * means, 0.0)
         return means.astype(np.float32), np.sqrt(variances).astype(np.float32)
 
-    def _same_tile_shift_mask(
+    def _shift_validity_mask(
         self,
         shape: Tuple[int, int],
         dy: int,
         dx: int
     ) -> np.ndarray:
-        """Mask shifted pixels whose source stays inside the same detector tile."""
+        """Boolean mask of pixels whose shifted source stays inside the frame.
+
+        Correlating over the whole valid frame (and pooling the result into
+        tiles afterwards) preserves every displacement up to the frame border.
+        Masking to *tile-local* pixels, as the previous implementation did,
+        erased motion whose displacement matched the tile size.
+        """
         height, width = shape
         cache_key = (height, width, dy, dx)
         cached = self._shift_mask_cache.get(cache_key)
@@ -942,20 +1162,41 @@ class MotionDetector:
             self._shift_mask_cache.move_to_end(cache_key)
             return cached
 
-        y_tiles = (np.arange(height) // self.tile_size)[:, None]
-        x_tiles = (np.arange(width) // self.tile_size)[None, :]
-        tile_ids = (y_tiles * ((width + self.tile_size - 1) // self.tile_size) + x_tiles + 1)
-        shifted_tile_ids = self._shift_no_wrap(tile_ids.astype(np.int32), dy, dx)
-        mask: np.ndarray = (shifted_tile_ids == tile_ids).astype(np.float32)
+        mask = np.ones((height, width), dtype=bool)
+        if dy > 0:
+            mask[:dy, :] = False
+        elif dy < 0:
+            mask[dy:, :] = False
+        if dx > 0:
+            mask[:, :dx] = False
+        elif dx < 0:
+            mask[:, dx:] = False
+
+        if abs(dy) >= height or abs(dx) >= width:
+            mask.fill(False)
+
         self._shift_mask_cache[cache_key] = mask
-        if len(self._shift_mask_cache) > self.SHIFT_MASK_CACHE_SIZE:
-            self._shift_mask_cache.popitem(last=False)
+        self._shift_mask_cache_bytes += mask.nbytes
+        while (
+            len(self._shift_mask_cache) > self.SHIFT_MASK_CACHE_SIZE
+            or self._shift_mask_cache_bytes > self.SHIFT_MASK_CACHE_BYTES
+        ):
+            _, evicted = self._shift_mask_cache.popitem(last=False)
+            self._shift_mask_cache_bytes -= evicted.nbytes
         return mask
 
     def _expand_tile_grid(self, tile_grid: np.ndarray, height: int, width: int) -> np.ndarray:
         """Paint a tile grid back to frame resolution."""
         # cv2.resize with INTER_NEAREST is much faster than np.repeat
         return cv2.resize(tile_grid, (width, height), interpolation=cv2.INTER_NEAREST)
+
+    def _expand_tile_grid_smooth(
+        self, tile_grid: np.ndarray, height: int, width: int
+    ) -> np.ndarray:
+        """Smoothly upsample a tile grid for continuous fields (not masks)."""
+        return cv2.resize(
+            tile_grid, (width, height), interpolation=cv2.INTER_LINEAR
+        ).astype(np.float32)
 
     def _build_motion_field(
         self,
@@ -991,6 +1232,10 @@ class MotionDetector:
         curr = np.asarray(frame_curr)
         if prev.ndim not in (2, 3) or curr.ndim not in (2, 3):
             raise ValueError("frames must be 2D grayscale or 3D color arrays")
+        if prev.size == 0 or curr.size == 0:
+            raise ValueError("frames must be non-empty")
+        if not (np.all(np.isfinite(prev)) and np.all(np.isfinite(curr))):
+            raise ValueError("frames contain NaN or Inf values")
 
         if prev.ndim == 3:
             prev = self._to_grayscale(prev)
@@ -1048,47 +1293,84 @@ class MotionDetector:
         saliency_map: np.ndarray,
         dt: Optional[float] = None,
     ) -> Tuple[float, Optional[float]]:
-        """Estimate looming (expansion) magnitude and time-to-contact.
+        """Estimate looming (radial expansion) and a heuristic time-to-contact.
 
-        Returns ``(looming_score, time_to_contact)``. ``time_to_contact`` is in
-        seconds when a positive ``dt`` (frame interval) is supplied, otherwise in
-        frames. It is ``None`` when expansion is below the confidence floor.
+        The old implementation differentiated a winner-take-all motion field.
+        For a symmetric expanding object the opponent stage cancels opposite
+        directions before divergence is measured, so the score stayed near zero.
+        This version measures how strongly the surviving motion vectors point
+        *away from* the active region's centroid, then suppresses the score when
+        the field is coherent in one direction (translation, not expansion).
+
+        Returns ``(looming_score, time_to_contact)``. ``looming_score`` is a
+        dimensionless expansion evidence score in [0, 1]. ``time_to_contact`` is
+        a heuristic: it assumes the confidence-weighted field is proportional to
+        pixel displacement, using the mean configured scale as the conversion.
+        It is in seconds when a positive ``dt`` is supplied, otherwise in
+        frames, and is ``None`` below the expansion threshold. It is **not** a
+        calibrated metric TTC and must not be used as a safety signal.
         """
         if not self.config.enable_looming:
             return 0.0, None
-            
-        H, W = motion_field.shape[:2]
-        
-        # We compute divergence: div(V) = d(Vx)/dx + d(Vy)/dy
-        # Positive divergence indicates expansion (looming)
-        dx = motion_field[..., 0]
-        dy = motion_field[..., 1]
-        
-        # Central difference
-        dVx_dx = np.zeros_like(dx)
-        dVy_dy = np.zeros_like(dy)
-        
-        dVx_dx[:, 1:-1] = (dx[:, 2:] - dx[:, :-2]) / 2.0
-        dVy_dy[1:-1, :] = (dy[2:, :] - dy[:-2, :]) / 2.0
-        
-        divergence = dVx_dx + dVy_dy
-        
-        # Only consider active regions
+
         active = saliency_map > 0.1
-        if not np.any(active):
+        if int(np.count_nonzero(active)) < 4:
             return 0.0, None
-            
-        mean_div = float(np.mean(divergence[active]))
-        
-        looming_score = max(0.0, mean_div)
-        
+
+        ys, xs = np.nonzero(active)
+        weights = saliency_map[ys, xs].astype(np.float64)
+        vx = motion_field[ys, xs, 0].astype(np.float64)
+        vy = motion_field[ys, xs, 1].astype(np.float64)
+
+        total_weight = float(np.sum(weights))
+        if total_weight <= 1e-9:
+            return 0.0, None
+
+        cx = float(np.average(xs, weights=weights))
+        cy = float(np.average(ys, weights=weights))
+
+        dx = xs.astype(np.float64) - cx
+        dy = ys.astype(np.float64) - cy
+        radius = np.hypot(dx, dy)
+        valid = radius > 1.0
+        if not np.any(valid):
+            return 0.0, None
+
+        weights = weights[valid]
+        vx = vx[valid]
+        vy = vy[valid]
+        radius = radius[valid]
+        ux = dx[valid] / radius
+        uy = dy[valid] / radius
+
+        speed = np.hypot(vx, vy)
+        mean_speed = float(np.average(speed, weights=weights))
+        if mean_speed <= 1e-9:
+            return 0.0, None
+
+        radial_speed = vx * ux + vy * uy
+        outflow = float(np.average(radial_speed, weights=weights) / mean_speed)
+
+        # A purely translating field has a large mean vector; radial flow has a
+        # near-zero mean. Suppress translation so it cannot masquerade as looming.
+        mean_vx = float(np.average(vx, weights=weights))
+        mean_vy = float(np.average(vy, weights=weights))
+        coherence = float(np.hypot(mean_vx, mean_vy) / mean_speed)
+        loom = max(0.0, outflow) * max(0.0, 1.0 - min(coherence, 1.0))
+        looming_score = float(np.clip(loom, 0.0, 1.0))
+
         ttc = None
         if looming_score > 0.05:
-            # tau = 2 / divergence gives time in frame units; convert to seconds.
-            ttc = 2.0 / looming_score
-            if dt is not None and dt > 0:
-                ttc *= dt
-                
+            mean_radius = float(np.average(radius, weights=weights))
+            mean_radial_speed = float(np.average(radial_speed, weights=weights))
+            # Convert confidence to pixels/frame with the mean correlation scale.
+            pixel_scale = float(np.mean(self.config.scales)) if self.config.scales else 1.0
+            denominator = mean_radial_speed * max(pixel_scale, 1e-6)
+            if denominator > 1e-9:
+                ttc = mean_radius / denominator
+                if dt is not None and dt > 0:
+                    ttc *= dt
+
         return looming_score, ttc
 
     def _compute_steering_signal(self, saliency_map: np.ndarray) -> Dict[str, float]:
@@ -1135,12 +1417,20 @@ class MotionDetector:
 
     def _normalize_frame(self, frame: np.ndarray) -> np.ndarray:
         """Convert integer or float frames into float32 intensity in [0, 1]."""
+        if frame.size == 0:
+            raise ValueError("frame must be non-empty")
+        if not np.all(np.isfinite(frame)):
+            raise ValueError("frame contains NaN or Inf values")
         if np.issubdtype(frame.dtype, np.integer):
             info = np.iinfo(frame.dtype)
             normalized = frame.astype(np.float32) / float(info.max)
         else:
             normalized = frame.astype(np.float32, copy=False)
-            if normalized.size and float(np.nanmax(normalized)) > 1.0:
+            if normalized.size and float(np.max(normalized)) > 1.0:
+                if float(np.max(normalized)) > 255.0:
+                    raise ValueError(
+                        "float frames must be in [0, 1] or [0, 255]; got values above 255"
+                    )
                 normalized = normalized / 255.0
         return typing.cast(np.ndarray, np.clip(normalized, 0.0, 1.0).astype(np.float32, copy=False))
 

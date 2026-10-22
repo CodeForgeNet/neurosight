@@ -8,6 +8,7 @@ Run: pytest test_neurosight.py -v
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -304,8 +305,11 @@ class TestMotionDetector:
             summarize_neurosight_vectors,
         )
 
+        repo_root = Path(__file__).resolve().parents[1]
         detector = MotionDetector(
-            connectome_weights_path='neurosight/data/connectome_weights.json',
+            connectome_weights_path=str(
+                repo_root / 'neurosight' / 'data' / 'connectome_weights.json'
+            ),
             tile_size=8,
         )
         generators = [generate_translating_square, generate_synthetic_motion]
